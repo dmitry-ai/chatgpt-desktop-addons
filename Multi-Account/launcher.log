@@ -386,3 +386,20 @@
 [2026-10-10 17:22:14.914] Basketball icon and properties enforced on HWND 0x4C60E5C
 [2026-10-10 17:23:44.180] User closed C2 window. Cleaning up process tree and releasing mutex.
 [2026-10-10 17:23:44.567] === ChatGPT2Launcher supervisor exited cleanly ===
+[2026-10-11 19:37:53.791] === ChatGPT2Launcher invoked ===
+[2026-10-11 19:37:53.794] InitDesktop attached (handle=0x2A4, success=False)
+[2026-10-11 19:37:53.797] Launching ChatGPT2.exe (Cold Start)...
+[2026-10-11 19:38:01.196] ChatGPT2 window ready in 7405 ms (PID: 4296, HWND: 0x6E1554)
+[2026-10-11 19:38:01.208] Supervisor initialized: hBig=0x41251B, hSmall=0x92349
+[2026-10-11 19:38:01.317] Basketball icon and properties enforced on HWND 0x6E1554
+[2026-10-11 19:38:01.377] ForceForeground activated window HWND 0x6E1554
+[2026-10-11 19:38:15.706] Detected icon reset on HWND 0x6E1554 (current=0x0, expected=0x92349). Restoring basketball icon...
+[2026-10-11 19:38:16.054] Basketball icon and properties enforced on HWND 0x6E1554
+[2026-10-11 19:38:17.109] Detected icon reset on HWND 0x6E1554 (current=0x0, expected=0x92349). Restoring basketball icon...
+[2026-10-11 19:38:17.241] Basketball icon and properties enforced on HWND 0x6E1554
+[2026-10-11 19:38:19.005] Detected icon reset on HWND 0x6E1554 (current=0x0, expected=0x92349). Restoring basketball icon...
+[2026-10-11 19:38:19.261] Basketball icon and properties enforced on HWND 0x6E1554
+[2026-10-11 19:38:21.403] Detected icon reset on HWND 0x6E1554 (current=0x0, expected=0x92349). Restoring basketball icon...
+[2026-10-11 19:38:21.534] Basketball icon and properties enforced on HWND 0x6E1554
+[2026-10-11 19:38:24.682] User closed C2 window. Cleaning up process tree and releasing mutex.
+[2026-10-11 19:38:25.393] === ChatGPT2Launcher supervisor exited cleanly ===
