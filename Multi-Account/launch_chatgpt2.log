@@ -1,0 +1,9 @@
+[2026-10-10 02:28:21.660] === Launch script started ===
+[2026-10-10 02:28:21.902] Helpers loaded.
+[2026-10-10 02:28:21.982] Found targetExe: C:\Program Files\WindowsApps\OpenAI.Codex_26.1007.2314.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe
+[2026-10-10 02:28:21.985] Alias already exists.
+[2026-10-10 02:28:21.987] Set env vars to: C:\Users\dfedi\AppData\Roaming\Codex-Profile2
+[2026-10-10 02:28:21.988] Starting process: C:\Users\dfedi\AppData\Local\Microsoft\WindowsApps\ChatGPT2.exe --remote-debugging-port=9224
+[2026-10-10 02:28:22.071] Process started with PID: 36056
+[2026-10-10 02:28:22.602] Found 2 window(s) for PID 36056
+[2026-10-10 02:28:22.944] === Launch script finished ===
