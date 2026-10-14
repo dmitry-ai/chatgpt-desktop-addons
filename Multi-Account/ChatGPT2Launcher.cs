@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -7,94 +8,8 @@ using System.Text;
 using System.Threading;
 
 public class ChatGPT2Launcher {
-    [DllImport("iphlpapi.dll", SetLastError = true)]
-    public static extern uint GetExtendedTcpTable(
-        IntPtr pTcpTable, ref int dwOutBufLen, bool sort,
-        int ipVersion, TCP_TABLE_CLASS tblClass, uint reserved);
-
-    public enum TCP_TABLE_CLASS {
-        TCP_TABLE_BASIC_LISTENER,
-        TCP_TABLE_BASIC_CONNECTIONS,
-        TCP_TABLE_BASIC_ALL,
-        TCP_TABLE_OWNER_PID_LISTENER,
-        TCP_TABLE_OWNER_PID_CONNECTIONS,
-        TCP_TABLE_OWNER_PID_ALL,
-        TCP_TABLE_OWNER_MODULE_LISTENER,
-        TCP_TABLE_OWNER_MODULE_CONNECTIONS,
-        TCP_TABLE_OWNER_MODULE_ALL
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct MIB_TCPROW_OWNER_PID {
-        public uint state;
-        public uint localAddr;
-        public byte localPort1;
-        public byte localPort2;
-        public byte localPort3;
-        public byte localPort4;
-        public uint remoteAddr;
-        public byte remotePort1;
-        public byte remotePort2;
-        public byte remotePort3;
-        public byte remotePort4;
-        public int owningPid;
-
-        public ushort LocalPort {
-            get { return (ushort)((localPort1 << 8) | localPort2); }
-        }
-    }
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    public struct STARTUPINFO {
-        public int cb;
-        public string lpReserved;
-        public string lpDesktop;
-        public string lpTitle;
-        public int dwX;
-        public int dwY;
-        public int dwXSize;
-        public int dwYSize;
-        public int dwXCountChars;
-        public int dwYCountChars;
-        public int dwFillAttribute;
-        public int dwFlags;
-        public short wShowWindow;
-        public short cbReserved2;
-        public IntPtr lpReserved2;
-        public IntPtr hStdInput;
-        public IntPtr hStdOutput;
-        public IntPtr hStdError;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct PROCESS_INFORMATION {
-        public IntPtr hProcess;
-        public IntPtr hThread;
-        public int dwProcessId;
-        public int dwThreadId;
-    }
-
-    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    public static extern bool CreateProcess(
-        string lpApplicationName,
-        string lpCommandLine,
-        IntPtr lpProcessAttributes,
-        IntPtr lpThreadAttributes,
-        bool bInheritHandles,
-        uint dwCreationFlags,
-        IntPtr lpEnvironment,
-        string lpCurrentDirectory,
-        ref STARTUPINFO lpStartupInfo,
-        out PROCESS_INFORMATION lpProcessInformation);
-
-    [DllImport("kernel32.dll")]
-    public static extern bool CloseHandle(IntPtr hObject);
-
-    [DllImport("user32.dll", SetLastError = true)]
+    [DllImport("user32.dll", EntryPoint = "OpenDesktopW", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern IntPtr OpenDesktop(string lpszDesktop, uint dwFlags, bool fInherit, uint dwDesiredAccess);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern bool SetThreadDesktop(IntPtr hDesktop);
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool CloseDesktop(IntPtr hDesktop);
@@ -122,6 +37,9 @@ public class ChatGPT2Launcher {
 
     [DllImport("user32.dll")]
     public static extern bool IsIconic(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetWindow(IntPtr hWnd, uint command);
 
     [DllImport("user32.dll")]
     public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
@@ -183,7 +101,7 @@ public class ChatGPT2Launcher {
     public const uint SWP_FRAMECHANGED = 0x0020;
     public const int SW_RESTORE = 9;
     public const int SW_SHOW = 5;
-    public const uint GENERIC_ALL = 0x10000000;
+    public const uint DESKTOP_ACCESS = 0x00C1;
     public const int CDP_PORT_C2 = 9224;
 
     [StructLayout(LayoutKind.Sequential, Pack = 4)]
@@ -207,428 +125,244 @@ public class ChatGPT2Launcher {
 
     [ComImport, Guid("886d8eeb-8cf2-4446-8d02-cdba1dbdcf99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     public interface IPropertyStore {
-        int GetCount(out uint cProps);
-        int GetAt(uint iProp, out PROPERTYKEY pkey);
-        int GetValue(ref PROPERTYKEY key, out PROPVARIANT pv);
-        int SetValue(ref PROPERTYKEY key, ref PROPVARIANT pv);
-        int Commit();
+        [PreserveSig] int GetCount(out uint cProps);
+        [PreserveSig] int GetAt(uint iProp, out PROPERTYKEY pkey);
+        [PreserveSig] int GetValue(ref PROPERTYKEY key, out PROPVARIANT pv);
+        [PreserveSig] int SetValue(ref PROPERTYKEY key, ref PROPVARIANT pv);
+        [PreserveSig] int Commit();
     }
 
-    private static IntPtr s_hDesktop = IntPtr.Zero;
 
-    public static void InitDesktop() {
-        if (s_hDesktop == IntPtr.Zero) {
-            try {
-                s_hDesktop = OpenDesktop("Default", 0, false, GENERIC_ALL);
-                if (s_hDesktop != IntPtr.Zero) {
-                    bool ok = SetThreadDesktop(s_hDesktop);
-                    Log(string.Format("InitDesktop attached (handle=0x{0:X}, success={1})", s_hDesktop.ToInt64(), ok));
-                }
-            } catch { }
-        }
-    }
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool DestroyIcon(IntPtr icon);
+    [DllImport("user32.dll", EntryPoint = "MessageBoxW", CharSet = CharSet.Unicode)]
+    private static extern int MessageBox(IntPtr owner, string text, string title, uint type);
 
-    private static readonly PROPERTYKEY PKEY_AppUserModel_ID =
+    private const string MutexName = @"Local\ChatGPT2Launcher_SingleInstance_Mutex";
+    private const string ActivationName = @"Local\Codex.Profile2.Activate";
+    private static IntPtr s_hDesktop;
+    private static string logPath;
+    private static readonly PROPERTYKEY AppIdKey =
         new PROPERTYKEY(new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), 5);
-
-    private static readonly PROPERTYKEY PKEY_AppUserModel_RelaunchIconResource =
+    private static readonly PROPERTYKEY IconKey =
         new PROPERTYKEY(new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), 3);
 
-    private static string logPath = "";
-
-    public static void Log(string msg) {
-        try {
-            string line = string.Format("[{0:yyyy-MM-dd HH:mm:ss.fff}] {1}", DateTime.Now, msg);
-            File.AppendAllText(logPath, line + Environment.NewLine);
-        } catch { }
-    }
-
-    public static int GetPidForPort(int port) {
-        int buffSize = 0;
-        GetExtendedTcpTable(IntPtr.Zero, ref buffSize, true, 2, TCP_TABLE_CLASS.TCP_TABLE_OWNER_PID_ALL, 0);
-        if (buffSize <= 0) return 0;
-        IntPtr buffTable = Marshal.AllocHGlobal(buffSize);
-        try {
-            if (GetExtendedTcpTable(buffTable, ref buffSize, true, 2, TCP_TABLE_CLASS.TCP_TABLE_OWNER_PID_ALL, 0) == 0) {
-                int entries = Marshal.ReadInt32(buffTable);
-                IntPtr rowPtr = (IntPtr)((long)buffTable + 4);
-                int rowSize = Marshal.SizeOf(typeof(MIB_TCPROW_OWNER_PID));
-                for (int i = 0; i < entries; i++) {
-                    var row = (MIB_TCPROW_OWNER_PID)Marshal.PtrToStructure(rowPtr, typeof(MIB_TCPROW_OWNER_PID));
-                    if (row.LocalPort == port) {
-                        return row.owningPid;
-                    }
-                    rowPtr = (IntPtr)((long)rowPtr + rowSize);
-                }
+    public static void Log(string message) {
+        if (logPath == null) return;
+        bool owned = false;
+        using (var mutex = new Mutex(false, @"Local\Codex.Profile2.Log")) {
+            try {
+                try { owned = mutex.WaitOne(1000); }
+                catch (AbandonedMutexException) { owned = true; }
+                if (!owned) { Trace.TraceError(message); return; }
+                File.AppendAllText(logPath, string.Format("[{0:yyyy-MM-dd HH:mm:ss.fff}] {1}\r\n", DateTime.Now, message));
+            } catch (IOException ex) {
+                Trace.TraceError("Launcher log failed: " + ex.Message);
+            } catch (UnauthorizedAccessException ex) {
+                Trace.TraceError("Launcher log failed: " + ex.Message);
+            } finally {
+                if (owned) mutex.ReleaseMutex();
             }
-        } catch { } finally {
-            Marshal.FreeHGlobal(buffTable);
         }
-        return 0;
-    }
-
-    private static IntPtr WaitForWindow(int pid, int timeoutMs) {
-        int elapsed = 0;
-        while (elapsed < timeoutMs) {
-            var hwnds = FindVisibleWindowsForProcess(pid);
-            if (hwnds.Count > 0) return hwnds[0];
-            Thread.Sleep(40);
-            elapsed += 40;
-        }
-        return IntPtr.Zero;
     }
 
     [STAThread]
-    public static void Main(string[] args) {
-        var sw = Stopwatch.StartNew();
+    public static int Main(string[] args) {
         string appDir = AppDomain.CurrentDomain.BaseDirectory;
         logPath = Path.Combine(appDir, "launcher.log");
+        string profile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Codex-Profile2");
+        string alias = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            @"Microsoft\WindowsApps\ChatGPT2.exe");
+        bool diagnostic = args.Length == 1 && args[0] == "--repair-alias";
         Log("=== ChatGPT2Launcher invoked ===");
-        InitDesktop();
-
-        string profileDir = @"C:\Users\dfedi\AppData\Roaming\Codex-Profile2";
-        string icoPath = Path.Combine(appDir, "ChatGPT2.ico");
-        string appId = "OpenAI.Codex.Profile2";
-        string aliasExe = @"C:\Users\dfedi\AppData\Local\Microsoft\WindowsApps\ChatGPT2.exe";
-
-        bool createdNew;
-        Mutex mutex = null;
-        try {
-            mutex = new Mutex(true, @"Local\ChatGPT2Launcher_SingleInstance_Mutex", out createdNew);
-        } catch (AbandonedMutexException) {
-            createdNew = true;
-        }
-
-        if (!createdNew) {
-            InitDesktop();
-            int pid = GetPidForPort(CDP_PORT_C2);
-            if (pid != 0) {
-                var hwnds = FindVisibleWindowsForProcess(pid);
-                if (hwnds.Count > 0) {
-                    ActivateHwnd(hwnds[0]);
-                    Log(string.Format("Secondary click activated existing window in {0} ms (PID: {1}, HWND: 0x{2:X}).",
-                        sw.ElapsedMilliseconds, pid, hwnds[0].ToInt64()));
-                    if (mutex != null) mutex.Close();
-                    return;
+        bool owned = false;
+        using (var mutex = new Mutex(false, MutexName)) {
+            try {
+                if (args.Length > 0 && !diagnostic) throw new ArgumentException("Supported option: --repair-alias");
+                if (diagnostic) { RepairAlias(alias); return 0; }
+                try { owned = mutex.WaitOne(0); }
+                catch (AbandonedMutexException) { owned = true; }
+                if (!owned) {
+                    SignalActivation();
+                    Log("Existing supervisor notified; no second application was launched.");
+                    return 0;
                 }
+                using (var activation = new EventWaitHandle(false, EventResetMode.AutoReset, ActivationName)) {
+                    s_hDesktop = OpenDesktop("Default", 0, false, DESKTOP_ACCESS);
+                    if (s_hDesktop == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot open the interactive desktop.");
+                    Directory.CreateDirectory(profile);
+                    using (Process target = C2Process.FindExisting(alias, CDP_PORT_C2) ?? Launch(alias, profile)) {
+                        if (!CodexPackage.Owns(target)) throw new InvalidOperationException("The launched process is not a Codex package.");
+                        var timer = Stopwatch.StartNew();
+                        IntPtr window = IntPtr.Zero;
+                        while (timer.ElapsedMilliseconds < 30000) {
+                            if (target.HasExited) throw new InvalidOperationException("Codex exited before creating its window (exit code " + target.ExitCode + ").");
+                            var windows = FindVisibleWindowsForProcess(target.Id);
+                            if (windows.Count > 0) { window = windows[0]; break; }
+                            Thread.Sleep(100);
+                        }
+                        if (window == IntPtr.Zero) throw new TimeoutException("Codex did not create its window within 30 seconds.");
+                        Log(string.Format("C2 ready (PID: {0}, HWND: 0x{1:X}, window wait: {2} ms).", target.Id, window.ToInt64(), timer.ElapsedMilliseconds));
+                        RunSupervisor(target, window, Path.Combine(appDir, "ChatGPT2.ico"), activation);
+                    }
+                }
+                Log("=== C2 supervisor exited cleanly ===");
+                return 0;
+            } catch (Exception ex) {
+                Log("ERROR: " + ex);
+                if (!diagnostic) MessageBox(IntPtr.Zero,
+                    "Не удалось открыть второй профиль Codex.\n\n" + ex.Message + "\n\nЖурнал: " + logPath,
+                    "Codex — C2", 0x10);
+                return 1;
+            } finally {
+                if (s_hDesktop != IntPtr.Zero) { CloseDesktop(s_hDesktop); s_hDesktop = IntPtr.Zero; }
+                if (owned) mutex.ReleaseMutex();
             }
+        }
+    }
 
-            // No window yet. Wait up to 10 seconds for primary launch to display its window.
-            Log("Secondary click: waiting for window to appear from primary launch...");
-            for (int i = 0; i < 200; i++) {
-                Thread.Sleep(50);
-                if (pid == 0) pid = GetPidForPort(CDP_PORT_C2);
-                if (pid != 0) {
-                    var hwnds = FindVisibleWindowsForProcess(pid);
-                    if (hwnds.Count > 0) {
-                        ActivateHwnd(hwnds[0]);
-                        Log(string.Format("Secondary click caught newly created window in {0} ms (PID: {1}, HWND: 0x{2:X}).",
-                            sw.ElapsedMilliseconds, pid, hwnds[0].ToInt64()));
-                        if (mutex != null) mutex.Close();
+    private static void SignalActivation() {
+        for (int i = 0; i < 40; i++) {
+            try {
+                using (var activation = EventWaitHandle.OpenExisting(ActivationName)) { activation.Set(); return; }
+            } catch (WaitHandleCannotBeOpenedException) {
+                Thread.Sleep(50); // Primary supervisor is creating the event.
+            }
+        }
+        throw new TimeoutException("The existing C2 supervisor is not responding.");
+    }
+
+    private static CodexPackage RepairAlias(string alias) {
+        CodexPackage package = CodexPackage.Resolve(Log);
+        bool changed = AppExecLink.Ensure(alias, CodexPackage.Family, package.AppUserModelId, package.Executable);
+        Log(string.Format("Execution alias {0}: {1}; app ID: {2}.",
+            changed ? "repaired" : "verified", package.Executable, package.AppUserModelId));
+        return package;
+    }
+
+    private static Process Launch(string alias, string profile) {
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            try {
+                CodexPackage package = RepairAlias(alias);
+                return C2Process.Start(alias, profile, Path.GetDirectoryName(package.Executable), CDP_PORT_C2);
+            } catch (FileNotFoundException ex) {
+                if (attempt == 3) throw;
+                Log("Package may be updating; retry " + attempt + ": " + ex.Message);
+            } catch (Win32Exception ex) {
+                if (attempt == 3 || (ex.NativeErrorCode != 2 && ex.NativeErrorCode != 3 && ex.NativeErrorCode != 5)) throw;
+                Log("Package launch may be updating; retry " + attempt + ": " + ex.Message);
+            }
+            Thread.Sleep(1000);
+        }
+        throw new InvalidOperationException("Unreachable launch state.");
+    }
+
+    private static void ActivateHwnd(IntPtr window) {
+        IntPtr foreground = GetForegroundWindow();
+        uint foregroundThread = 0;
+        if (foreground != IntPtr.Zero) GetWindowThreadProcessId(foreground, out foregroundThread);
+        uint currentThread = GetCurrentThreadId();
+        bool attached = foregroundThread != 0 && foregroundThread != currentThread &&
+            AttachThreadInput(currentThread, foregroundThread, true);
+        try {
+            RECT rect;
+            bool minimized = GetWindowRect(window, out rect) && rect.Left <= -10000 && rect.Top <= -10000;
+            ShowWindow(window, IsIconic(window) || minimized ? SW_RESTORE : SW_SHOW);
+            BringWindowToTop(window);
+            bool focused = SetForegroundWindow(window);
+            Log(string.Format("C2 activation requested (HWND: 0x{0:X}, foreground: {1}).", window.ToInt64(), focused));
+        } finally {
+            if (attached) AttachThreadInput(currentThread, foregroundThread, false);
+        }
+    }
+
+    private static void RunSupervisor(Process target, IntPtr window, string iconPath, EventWaitHandle activation) {
+        IntPtr big = LoadImage(IntPtr.Zero, iconPath, IMAGE_ICON, 32, 32, LR_LOADFROMFILE);
+        IntPtr small = LoadImage(IntPtr.Zero, iconPath, IMAGE_ICON, 16, 16, LR_LOADFROMFILE);
+        try {
+            if (big == IntPtr.Zero || small == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot load the C2 icon.");
+            ApplyWindowProperties(window, big, small, iconPath);
+            ActivateHwnd(window);
+            long disappearedAt = -1;
+            var timer = Stopwatch.StartNew();
+            int cycle = 0;
+            while (!target.HasExited) {
+                bool activate = activation.WaitOne(500);
+                var windows = FindVisibleWindowsForProcess(target.Id);
+                if (windows.Count == 0) {
+                    if (disappearedAt < 0) disappearedAt = timer.ElapsedMilliseconds;
+                    if (timer.ElapsedMilliseconds - disappearedAt >= 2000) {
+                        Log("C2 window was closed; stopping only its verified process tree.");
+                        C2Process.StopOwnedTree(target, Log);
                         return;
                     }
+                    continue;
                 }
-            }
-
-            // Primary launch timed out without any window. Clean up zombie and take ownership.
-            Log("Secondary click: Primary launch timed out with 0 windows. Cleaning up...");
-            if (pid != 0) {
-                KillProcessTree(pid);
-            }
-            KillOtherLaunchers();
-            Thread.Sleep(150);
-
-            if (mutex != null) {
-                try { mutex.Close(); } catch { }
-            }
-            try {
-                mutex = new Mutex(true, @"Local\ChatGPT2Launcher_SingleInstance_Mutex", out createdNew);
-            } catch (AbandonedMutexException) {
-                createdNew = true;
-            }
-        }
-
-        // Primary supervisor instance
-        int existingPid = GetPidForPort(CDP_PORT_C2);
-        if (existingPid != 0) {
-            var visibleHwnds = FindVisibleWindowsForProcess(existingPid);
-            if (visibleHwnds.Count > 0) {
-                Log(string.Format("Found active C2 PID {0} with window in {1} ms.", existingPid, sw.ElapsedMilliseconds));
-                RunSupervisor(existingPid, visibleHwnds[0], icoPath, appId);
-                if (mutex != null) {
-                    try { mutex.ReleaseMutex(); } catch { }
-                    mutex.Close();
-                }
-                return;
-            } else {
-                Log(string.Format("Found headless zombie C2 PID {0}. Terminating to free lockfile...", existingPid));
-                KillProcessTree(existingPid);
-                Thread.Sleep(200);
-            }
-        }
-
-        if (!Directory.Exists(profileDir)) {
-            Directory.CreateDirectory(profileDir);
-        }
-
-        // Cold Launch
-        Log("Launching ChatGPT2.exe (Cold Start)...");
-        LaunchProcess(aliasExe, profileDir);
-
-        int targetPid = 0;
-        IntPtr targetHwnd = IntPtr.Zero;
-
-        for (int i = 0; i < 250; i++) {
-            Thread.Sleep(40);
-            if (targetPid == 0) {
-                targetPid = GetPidForPort(CDP_PORT_C2);
-            }
-            if (targetPid != 0) {
-                targetHwnd = WaitForWindow(targetPid, 80);
-                if (targetHwnd != IntPtr.Zero) break;
-            }
-        }
-
-        sw.Stop();
-        Log(string.Format("ChatGPT2 window ready in {0} ms (PID: {1}, HWND: 0x{2:X})",
-            sw.ElapsedMilliseconds, targetPid, targetHwnd.ToInt64()));
-
-        if (targetPid != 0) {
-            RunSupervisor(targetPid, targetHwnd, icoPath, appId);
-        }
-
-        if (mutex != null) {
-            try { mutex.ReleaseMutex(); } catch { }
-            mutex.Close();
-        }
-
-        Log("=== ChatGPT2Launcher supervisor exited cleanly ===");
-    }
-
-    private static void LaunchProcess(string aliasExe, string profileDir) {
-        try {
-            var si = new STARTUPINFO();
-            si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
-            si.lpDesktop = @"WinSta0\Default";
-
-            PROCESS_INFORMATION pi;
-            string cmd = string.Format("cmd.exe /c start \"\" \"{0}\" --remote-debugging-port={1}", aliasExe, CDP_PORT_C2);
-
-            Environment.SetEnvironmentVariable("CODEX_HOME", profileDir);
-            Environment.SetEnvironmentVariable("CODEX_ELECTRON_USER_DATA_PATH", profileDir);
-
-            if (CreateProcess(null, cmd, IntPtr.Zero, IntPtr.Zero, false, 0, IntPtr.Zero, null, ref si, out pi)) {
-                CloseHandle(pi.hProcess);
-                CloseHandle(pi.hThread);
-            } else {
-                var psi = new ProcessStartInfo();
-                psi.FileName = "cmd.exe";
-                psi.Arguments = "/c start \"\" \"" + aliasExe + "\" --remote-debugging-port=" + CDP_PORT_C2;
-                psi.WindowStyle = ProcessWindowStyle.Hidden;
-                psi.CreateNoWindow = true;
-                psi.UseShellExecute = false;
-                psi.EnvironmentVariables["CODEX_HOME"] = profileDir;
-                psi.EnvironmentVariables["CODEX_ELECTRON_USER_DATA_PATH"] = profileDir;
-                Process.Start(psi);
-            }
-        } catch (Exception ex) {
-            Log("LaunchProcess error: " + ex.Message);
-        }
-    }
-
-    private static void ActivateHwnd(IntPtr hwnd) {
-        if (hwnd == IntPtr.Zero) return;
-        try {
-            InitDesktop();
-            IntPtr fg = GetForegroundWindow();
-            uint fgThread = 0;
-            if (fg != IntPtr.Zero) {
-                GetWindowThreadProcessId(fg, out fgThread);
-            }
-            uint curThread = GetCurrentThreadId();
-
-            if (fgThread != 0 && fgThread != curThread) {
-                AttachThreadInput(curThread, fgThread, true);
-            }
-
-            RECT r;
-            GetWindowRect(hwnd, out r);
-            bool isChromiumMinimized = (r.Left <= -10000 && r.Top <= -10000);
-
-            if (IsIconic(hwnd) || isChromiumMinimized) {
-                ShowWindow(hwnd, SW_RESTORE);
-            } else {
-                ShowWindow(hwnd, SW_SHOW);
-            }
-            BringWindowToTop(hwnd);
-            SetForegroundWindow(hwnd);
-
-            if (fgThread != 0 && fgThread != curThread) {
-                AttachThreadInput(curThread, fgThread, false);
-            }
-
-            Log(string.Format("ForceForeground activated window HWND 0x{0:X}", hwnd.ToInt64()));
-        } catch { }
-    }
-
-    private static void RunSupervisor(int targetPid, IntPtr initialHwnd, string icoPath, string appId) {
-        InitDesktop();
-
-        IntPtr hBig = LoadImage(IntPtr.Zero, icoPath, IMAGE_ICON, 32, 32, LR_LOADFROMFILE);
-        IntPtr hSmall = LoadImage(IntPtr.Zero, icoPath, IMAGE_ICON, 16, 16, LR_LOADFROMFILE);
-        ulong expSmVal = (ulong)(hSmall.ToInt64() & 0xFFFFFFFFL);
-        Log(string.Format("Supervisor initialized: hBig=0x{0:X}, hSmall=0x{1:X}", hBig.ToInt64(), hSmall.ToInt64()));
-
-        bool hadVisibleWindow = false;
-
-        if (initialHwnd != IntPtr.Zero) {
-            ApplyWindowProperties(initialHwnd, hBig, hSmall, icoPath, appId);
-            ActivateHwnd(initialHwnd);
-            hadVisibleWindow = true;
-        }
-
-        int cycle = 0;
-        while (true) {
-            try {
-                Process p = Process.GetProcessById(targetPid);
-                if (p.HasExited) {
-                    Log("Target PID has exited.");
-                    break;
-                }
-            } catch {
-                Log("Target PID not found.");
-                break;
-            }
-
-            var visibleHwnds = FindVisibleWindowsForProcess(targetPid);
-            if (visibleHwnds.Count > 0) {
-                hadVisibleWindow = true;
-
-                foreach (var hwnd in visibleHwnds) {
-                    UIntPtr curSm;
-                    SendMessageTimeout(hwnd, WM_GETICON, (UIntPtr)ICON_SMALL, IntPtr.Zero, SMTO_ABORTIFHUNG, 500, out curSm);
-                    ulong curSmVal = curSm.ToUInt64() & 0xFFFFFFFFL;
-
-                    // If icon does not match our basketball icon, reapply immediately
-                    if (curSmVal != expSmVal) {
-                        Log(string.Format("Detected icon reset on HWND 0x{0:X} (current=0x{1:X}, expected=0x{2:X}). Restoring basketball icon...",
-                            hwnd.ToInt64(), curSmVal, expSmVal));
-                        ApplyWindowProperties(hwnd, hBig, hSmall, icoPath, appId);
+                disappearedAt = -1;
+                foreach (IntPtr hwnd in windows) {
+                    UIntPtr current;
+                    IntPtr result = SendMessageTimeout(hwnd, WM_GETICON, (UIntPtr)ICON_SMALL, IntPtr.Zero, SMTO_ABORTIFHUNG, 500, out current);
+                    if (result != IntPtr.Zero && (current.ToUInt64() & 0xFFFFFFFFL) != ((ulong)small.ToInt64() & 0xFFFFFFFFL)) {
+                        ApplyWindowProperties(hwnd, big, small, iconPath);
                     } else if (cycle % 10 == 0) {
-                        // Periodic reinforcement of window title if Chromium reset it to "ChatGPT"
-                        var sb = new StringBuilder(256);
-                        GetWindowText(hwnd, sb, 256);
-                        if (sb.ToString() == "ChatGPT") {
-                            SetWindowText(hwnd, "ChatGPT 2");
-                        }
+                        var title = new StringBuilder(256);
+                        GetWindowText(hwnd, title, title.Capacity);
+                        if (title.ToString() != "ChatGPT 2") SetWindowText(hwnd, "ChatGPT 2");
                     }
                 }
-            } else {
-                if (hadVisibleWindow) {
-                    Thread.Sleep(2000);
-                    var recheck = FindVisibleWindowsForProcess(targetPid);
-                    if (recheck.Count == 0) {
-                        Log("User closed C2 window. Cleaning up process tree and releasing mutex.");
-                        KillProcessTree(targetPid);
-                        break;
-                    }
-                }
+                if (activate) ActivateHwnd(windows[0]);
+                cycle++;
             }
-
-            cycle++;
-            Thread.Sleep(500);
+            Log("C2 application exited.");
+        } finally {
+            if (small != IntPtr.Zero) DestroyIcon(small);
+            if (big != IntPtr.Zero) DestroyIcon(big);
         }
     }
 
-    private static void ApplyWindowProperties(IntPtr hwnd, IntPtr hBig, IntPtr hSmall, string icoPath, string appId) {
+    private static void SetStringProperty(IPropertyStore store, PROPERTYKEY key, string value) {
+        var variant = new PROPVARIANT { vt = 31, pwszVal = Marshal.StringToCoTaskMemUni(value) };
+        try { Marshal.ThrowExceptionForHR(store.SetValue(ref key, ref variant)); }
+        finally { Marshal.FreeCoTaskMem(variant.pwszVal); }
+    }
+
+    private static void ApplyWindowProperties(IntPtr window, IntPtr big, IntPtr small, string iconPath) {
+        IPropertyStore store = null;
         try {
-            UIntPtr res;
-            SendMessageTimeout(hwnd, WM_SETICON, (UIntPtr)ICON_BIG, hBig, SMTO_ABORTIFHUNG, 2000, out res);
-            SendMessageTimeout(hwnd, WM_SETICON, (UIntPtr)ICON_SMALL, hSmall, SMTO_ABORTIFHUNG, 2000, out res);
-
-            SetWindowText(hwnd, "ChatGPT 2");
-
             Guid guid = typeof(IPropertyStore).GUID;
-            IPropertyStore store;
-            int hr = SHGetPropertyStoreForWindow(hwnd, ref guid, out store);
-            if (hr == 0 && store != null) {
-                PROPVARIANT pvAppId = new PROPVARIANT();
-                pvAppId.vt = 31; // VT_LPWSTR
-                pvAppId.pwszVal = Marshal.StringToCoTaskMemUni(appId);
-                PROPERTYKEY keyAppId = PKEY_AppUserModel_ID;
-                store.SetValue(ref keyAppId, ref pvAppId);
-
-                PROPVARIANT pvIcon = new PROPVARIANT();
-                pvIcon.vt = 31; // VT_LPWSTR
-                pvIcon.pwszVal = Marshal.StringToCoTaskMemUni(icoPath + ",0");
-                PROPERTYKEY keyIcon = PKEY_AppUserModel_RelaunchIconResource;
-                store.SetValue(ref keyIcon, ref pvIcon);
-
-                store.Commit();
-                Marshal.ReleaseComObject(store);
-            }
-
-            SetWindowPos(hwnd, IntPtr.Zero, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
-            Log(string.Format("Basketball icon and properties enforced on HWND 0x{0:X}", hwnd.ToInt64()));
-        } catch (Exception ex) {
-            Log("ApplyWindowProperties error: " + ex.Message);
+            Marshal.ThrowExceptionForHR(SHGetPropertyStoreForWindow(window, ref guid, out store));
+            SetStringProperty(store, AppIdKey, "OpenAI.Codex.Profile2");
+            SetStringProperty(store, IconKey, iconPath + ",0");
+            Marshal.ThrowExceptionForHR(store.Commit());
+            UIntPtr ignored;
+            SendMessageTimeout(window, WM_SETICON, (UIntPtr)ICON_BIG, big, SMTO_ABORTIFHUNG, 1000, out ignored);
+            SendMessageTimeout(window, WM_SETICON, (UIntPtr)ICON_SMALL, small, SMTO_ABORTIFHUNG, 1000, out ignored);
+            SetWindowText(window, "ChatGPT 2");
+            SetWindowPos(window, IntPtr.Zero, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+            Log(string.Format("C2 icon and grouping applied (HWND: 0x{0:X}).", window.ToInt64()));
+        } catch (COMException ex) {
+            Log("Window property update failed: " + ex.Message);
+        } finally {
+            if (store != null) Marshal.ReleaseComObject(store);
         }
     }
 
     private static List<IntPtr> FindVisibleWindowsForProcess(int pid) {
-        var list = new List<IntPtr>();
-        EnumWindowsProc proc = (hWnd, lParam) => {
+        var result = new List<IntPtr>();
+        EnumWindowsProc callback = (window, data) => {
             uint windowPid;
-            GetWindowThreadProcessId(hWnd, out windowPid);
-            if (windowPid == (uint)pid) {
-                var sbClass = new StringBuilder(256);
-                GetClassName(hWnd, sbClass, 256);
-                string cls = sbClass.ToString();
-                if (cls.StartsWith("Chrome_WidgetWin_1")) {
-                    if (IsWindowVisible(hWnd)) {
-                        RECT r;
-                        GetWindowRect(hWnd, out r);
-                        bool isChromiumMinimized = (r.Left <= -10000 && r.Top <= -10000);
-                        if (isChromiumMinimized || IsIconic(hWnd) || (r.Width > 200 && r.Height > 200)) {
-                            list.Add(hWnd);
-                        }
-                    }
-                }
-            }
+            GetWindowThreadProcessId(window, out windowPid);
+            if (windowPid != (uint)pid || !IsWindowVisible(window)) return true;
+            // Main top-level window, independent of the shell's window class name.
+            if (GetWindow(window, 4) != IntPtr.Zero) return true; // GW_OWNER
+            RECT rect;
+            if (GetWindowRect(window, out rect) &&
+                (IsIconic(window) || (rect.Left <= -10000 && rect.Top <= -10000) || (rect.Width > 200 && rect.Height > 200))) result.Add(window);
             return true;
         };
-
-        try {
-            EnumWindows(proc, IntPtr.Zero);
-            if (list.Count > 0) return list;
-
-            IntPtr hDesk = OpenDesktop("Default", 0, false, GENERIC_ALL);
-            if (hDesk != IntPtr.Zero) {
-                EnumDesktopWindows(hDesk, proc, IntPtr.Zero);
-                CloseDesktop(hDesk);
-            }
-        } catch { }
-        return list;
-    }
-
-    private static void KillOtherLaunchers() {
-        int currentPid = Process.GetCurrentProcess().Id;
-        foreach (var p in Process.GetProcessesByName("ChatGPT2Launcher")) {
-            if (p.Id != currentPid) {
-                try { p.Kill(); } catch { }
-            }
+        if (!EnumDesktopWindows(s_hDesktop, callback, IntPtr.Zero)) {
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot enumerate C2 windows.");
         }
-    }
-
-    private static void KillProcessTree(int rootPid) {
-        try {
-            var psi = new ProcessStartInfo();
-            psi.FileName = "taskkill.exe";
-            psi.Arguments = string.Format("/PID {0} /T /F", rootPid);
-            psi.CreateNoWindow = true;
-            psi.UseShellExecute = false;
-            var proc = Process.Start(psi);
-            proc.WaitForExit(3000);
-        } catch { }
+        return result;
     }
 }
