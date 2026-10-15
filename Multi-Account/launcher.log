@@ -643,3 +643,4 @@
 [2026-10-15 19:43:52.310] C2 ready (PID: 13852, HWND: 0x8203C, window wait: 6400 ms).
 [2026-10-15 19:43:52.387] C2 icon and grouping applied (HWND: 0x8203C).
 [2026-10-15 19:43:52.447] C2 activation requested (HWND: 0x8203C, foreground: False).
+[2026-10-15 21:34:09.779] C2 icon and grouping applied (HWND: 0x1C073C).
