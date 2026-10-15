@@ -1,5 +1,5 @@
 import {connectScript} from './desktop.mjs';
-import {observeProjects,planOperation,acknowledge,markStarted,failOperation,resumeSync,projectState,folderOperation,pendingCount} from './catalog.mjs';
+import {observeProjects,planOperation,acknowledge,markStarted,failOperation,resumeSync,projectState,folderOperation,pendingCount,ensureProject,registrationReceipt} from './catalog.mjs';
 const allowedEvents=new Set(['createLocal','editLocal','renameLocal','upsertLocal','removeLocal','setProjectOrder']);
 
 export class ProjectSynchronizer{
@@ -23,6 +23,11 @@ export class ProjectSynchronizer{
   }
   status(){return Object.fromEntries(this.profiles.map(p=>[p.id,{...this.health.get(p.id),pending:pendingCount(this.store.state,p.id)}]));}
   projection(profile){return projectState(this.store.state,typeof profile==='string'?profile:profile.id,{accounts:this.status()});}
+  async ensureProject(profileId,spec){
+    const {result}=await this.store.transact(state=>ensureProject(state,profileId,spec));
+    await this.notify();this.wakeAll();return result;
+  }
+  registration(id,profileId){return {...registrationReceipt(this.store.state,id,profileId),accounts:this.status()};}
   async operation(profile,operation){
     if(operation.type==='retry-sync'){
       await this.store.transact(resumeSync);

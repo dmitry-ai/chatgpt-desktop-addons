@@ -157,6 +157,12 @@ export function planOperation(state,profileId,snapshot){
   for(const id of state.projectOrder){
     const p=state.projects[id],b=profile.bindings[id];if(!b||state.conflicts.some(c=>c.projectId===id))continue;
     const actual=snapshot[b.desktopId];
+    // A tool-created project first uses the originating profile's native Trust flow.
+    // Other profiles wait for that actual registration before provenance-based restore.
+    if(!actual&&p.registrationSource&&p.registrationSource!==profileId){
+      const source=state.profiles[p.registrationSource]?.bindings[id];
+      if(!source?.known||source.missing||!source.lastSeen||!equal(source.lastSeen.rootPaths.map(rootKey),p.rootPaths.map(rootKey)))continue;
+    }
     if(p.deleted&&!actual)continue;
     if(!p.deleted&&actual&&equal(fields(actual),fields(p)))continue;
     if(!p.deleted&&b.missing)continue;
@@ -222,6 +228,47 @@ export function folderOperation(state,profileId,operation){
   const next=applyOperation({schemaVersion:1,revision:state.revision,folders:state.folders,projectFolderMap:state.projectFolderMap,collapsedFolderIds:profile.collapsedFolderIds},op);
   state.folders=next.folders;state.projectFolderMap=next.projectFolderMap;profile.collapsedFolderIds=next.collapsedFolderIds;
   for(const p of Object.values(state.profiles))p.collapsedFolderIds=p.collapsedFolderIds.filter(id=>state.folders.some(f=>f.id===id));
+}
+
+// Idempotent integration boundary for local project producers (for example Upwork).
+// The daemon owns this transaction; callers never edit catalog.json or profile files.
+export function ensureProject(state,profileId,spec){
+  if(!state.profiles[profileId])throw Error('Неизвестный исходный профиль');
+  if(!spec||!validProject({id:'validation',...spec})||!Array.isArray(spec.folderPath)||
+    !spec.folderPath.length||spec.folderPath.some(name=>typeof name!=='string'||!name.trim()||name.length>160))throw Error('Некорректный запрос регистрации проекта');
+  const matches=Object.values(state.projects).filter(p=>!p.deleted&&identity(p)===identity(spec));
+  if(matches.length>1)throw Error('Неоднозначное сопоставление рабочих каталогов проекта');
+  let project=matches[0];
+  if(project&&state.conflicts.some(c=>c.projectId===project.id))throw Error('Сначала разрешите конфликт общего проекта');
+  if(!project){
+    project={id:randomUUID(),...fields(spec),registrationSource:profileId};
+    state.projects[project.id]=project;state.projectOrder.push(project.id);ensureBindings(state);
+  }
+  let parentId=null;
+  for(const name of spec.folderPath){
+    const matches=state.folders.filter(f=>f.parentId===parentId&&f.name.normalize('NFKC').toLocaleLowerCase('en-US')===name.normalize('NFKC').toLocaleLowerCase('en-US'));
+    if(matches.length>1)throw Error('Неоднозначная ветка папок');
+    let folder=matches[0];
+    if(!folder){folder={id:randomUUID(),name,parentId};folderOperation(state,profileId,{type:'create',...folder});}
+    parentId=folder.id;
+  }
+  folderOperation(state,profileId,{type:'assign',projectKey:'shared:'+project.id,folderId:parentId});
+  return registrationReceipt(state,project.id,profileId);
+}
+
+export function registrationReceipt(state,id,profileId){
+  const project=state.projects[id];
+  if(!project||project.deleted||!state.profiles[profileId])throw Error('Общий проект или профиль не найден');
+  const folderId=state.projectFolderMap[id],branch=[];let folder=state.folders.find(f=>f.id===folderId);
+  while(folder){branch.unshift(folder.name);folder=state.folders.find(f=>f.id===folder.parentId);}
+  const profiles=Object.fromEntries(Object.entries(state.profiles).map(([name,p])=>{
+    const binding=p.bindings[id],ready=!!(binding?.known&&!binding.missing&&equal(binding.lastSeen,fields(project)));
+    return [name,{project_id:binding?.desktopId??null,ready,pause_reason:p.pauseReason??null}];
+  }));
+  return {shared_id:id,project_name:project.name,root_paths:[...project.rootPaths],folder_id:folderId,
+    folder_path:branch.join(' / '),profiles,complete:profiles[profileId].ready,
+    status:profiles[profileId].ready?'registered':'pending',
+    conflicts:state.conflicts.filter(c=>c.projectId===id)};
 }
 export function projectState(state,profileId,status={}){
   const profile=state.profiles[profileId],map={},order=[];

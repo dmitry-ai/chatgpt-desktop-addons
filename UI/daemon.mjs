@@ -104,6 +104,15 @@ const server=net.createServer(socket=>{
         case 'state':result=state(request.profile??'C1');break;
         case 'operation':{const profile=profiles.find(p=>p.id===request.profile);if(!profile)throw Error('Неизвестный профиль');result=await operate(profile,request.operation);break;}
         case 'shared-catalog':result=catalog.state;break;
+        case 'shared-ensure-project':{
+          if(!shared)throw Error(startupError??'Общий каталог ещё не готов');
+          for(const root of request.project?.rootPaths??[]){if(!(await fs.stat(root)).isDirectory())throw Error('Рабочий каталог проекта не существует');}
+          result=await shared.ensureProject(request.profile,request.project);break;
+        }
+        case 'shared-registration':{
+          if(!shared)throw Error(startupError??'Общий каталог ещё не готов');
+          result=shared.registration(request.sharedId,request.profile);break;
+        }
         case 'shared-sync':shared?.wakeAll();result={queued:true};break;
         case 'shared-reconnect':for(const [key,c]of clients)if(!request.profile||c.profile.id===request.profile){await c.cdp.evaluate('window.__codexSharedDesktop?.dispose()');c.cdp.close();clients.delete(key);}result={reconnecting:true};break;
         case 'reload':await assets();await Promise.allSettled([...clients.values()].map(install));result={reloaded:true};break;

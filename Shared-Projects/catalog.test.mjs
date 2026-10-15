@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import {CatalogStore,migrateSeeds,observeProjects,planOperation,acknowledge,markStarted,failOperation,resumeSync,folderOperation,projectState,pendingCount,resolveConflict,identity,rootKey,stateDirectory} from './catalog.mjs';
+import {CatalogStore,migrateSeeds,observeProjects,planOperation,acknowledge,markStarted,failOperation,resumeSync,folderOperation,projectState,pendingCount,resolveConflict,identity,rootKey,stateDirectory,ensureProject,registrationReceipt} from './catalog.mjs';
 import {findProjectServiceExport,findProjectHostImport,operationLedger} from './desktop.mjs';
 const project=(id,name='Project',rootPaths=['C:\\work\\project'])=>({id,name,rootPaths});
 const folder=(id,name,parentId=null)=>({id,name,parentId});
@@ -11,6 +11,39 @@ const seed=(id,projects,tree=folders())=>({id,projects:Object.fromEntries(projec
 const pair=()=>migrateSeeds([seed('C1',[project('native-1')],folders([folder('folder-1','Work')],{},['folder-1'])),seed('C2',[project('native-2')],folders([folder('folder-2','Work')]))]);
 const snapshot=p=>Object.fromEntries(p.map(p=>[p.id,p]));
 const shared=s=>Object.keys(s.projects)[0];
+
+test('producer registration reuses identity, preserves names/IDs and assigns one common branch',()=>{
+ const s=pair(),before=structuredClone(s.profiles),id=shared(s);
+ const spec={name:'Suggested name',rootPaths:['c:/WORK/project/'],folderPath:['Upwork','Proposals','2026','10','15']};
+ const first=ensureProject(s,'C1',spec),snapshot=structuredClone(s);
+ const second=ensureProject(s,'C2',spec);
+ assert.equal(first.shared_id,id);assert.equal(second.shared_id,id);assert.deepEqual(s,snapshot);
+ assert.equal(first.project_name,'Project');assert.equal(first.folder_path,'Upwork / Proposals / 2026 / 10 / 15');
+ assert.equal(first.profiles.C1.project_id,'native-1');assert.equal(first.profiles.C2.project_id,'native-2');
+ assert.deepEqual(s.profiles,before);assert.equal(first.complete,true);
+ assert.equal(projectState(s,'C2').projectFolderMap['local:project:native-2'],first.folder_id);
+});
+
+test('producer-created project waits for actual source registration before restoring another profile',()=>{
+ const s=pair(),spec={name:'New job',rootPaths:['C:/work/new-job'],folderPath:['Upwork','Proposals']};
+ const registration=ensureProject(s,'C2',spec),id=registration.shared_id;
+ assert.equal(registration.complete,false);assert.equal(planOperation(s,'C1',snapshot([project('native-1')])),null);
+ const op=planOperation(s,'C2',snapshot([project('native-2')]));
+ assert.equal(op.registration,'sync');assert.equal(op.approvedBy,null);
+ acknowledge(s,op,{id:op.desktopId,...op.value});
+ const replica=planOperation(s,'C1',snapshot([project('native-1')]));
+ assert.equal(replica.registration,'restore');assert.equal(replica.approvedBy,'C2');
+ assert.equal(registrationReceipt(s,id,'C2').complete,true);
+});
+
+test('producer retry survives pending confirmation and never reuses a deleted project',()=>{
+ const s=pair(),spec={name:'Job',rootPaths:['C:/job'],folderPath:['Upwork']};
+ const first=ensureProject(s,'C1',spec);const op=planOperation(s,'C1',snapshot([project('native-1')]));markStarted(s,op.id);
+ assert.equal(ensureProject(s,'C1',spec).shared_id,first.shared_id);
+ assert.equal(planOperation(s,'C1',snapshot([project('native-1')])).id,op.id);
+ s.projects[first.shared_id].deleted=true;s.operations=[];
+ assert.notEqual(ensureProject(s,'C1',spec).shared_id,first.shared_id);
+});
 
 test('migration merges identical roots and folder paths while retaining native IDs and local expansion',()=>{
  const s=pair(),id=shared(s);assert.equal(Object.keys(s.projects).length,1);assert.equal(s.folders.length,1);

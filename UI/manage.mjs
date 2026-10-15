@@ -10,7 +10,11 @@ export function control(request) {
 }
 if(process.argv[1]?.endsWith('manage.mjs')) {
   const command=process.argv[2]??'status';
-  const request={command,profile:process.argv[3]??'C1'};
+  let request={command,profile:process.argv[3]??'C1'};
+  if(command==='request'){
+    let input='';for await(const part of process.stdin)input+=part;
+    request=JSON.parse(input);
+  }
   if(command==='operation')request.operation=JSON.parse(process.argv[4]);
   try {console.log(JSON.stringify(await control(request),null,2))}catch(error){console.error(error.message);process.exitCode=1}
 }
