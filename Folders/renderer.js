@@ -79,6 +79,42 @@ function installCodexFolders(options) {
       const add=element('button','','Новая папка…');add.type='button';add.onclick=()=>createFolder(target.value||null,projectKey);form.append(add);return target;
     },select=>request({type:'assign',projectKey,folderId:select.value||null}));
   }
+  function syncTitle() {
+    const sync=state.sync;if(!sync?.shared)return '';
+    if(sync.conflicts?.length)return 'Общие проекты: требуется выбрать изменения';
+    const accounts=Object.entries(sync.accounts??{});
+    if(accounts.some(([,a])=>['paused','unsupported'].includes(a.state)))return 'Общие проекты: синхронизация приостановлена';
+    if(accounts.some(([,a])=>a.state==='waiting'))return 'Общие проекты: ожидает ответа приложения';
+    if(accounts.some(([,a])=>a.pending>0))return 'Общие проекты: есть ожидающие изменения';
+    return 'Общие проекты: синхронизировано';
+  }
+  function sharedStatus() {
+    const sync=state.sync;if(!sync?.shared)return;
+    openDialog('Общие проекты',form=>{
+      form.append(element('p','',syncTitle().replace('Общие проекты: ','')));
+      for(const [id,account]of Object.entries(sync.accounts??{})){
+        const label=account.state==='offline'?'закрыт':account.state==='connected'?'подключён':account.state==='waiting'?'ожидает ответа приложения':'приостановлено';
+        form.append(element('p','',id+' — '+label+(account.pending?' · ожидает изменений: '+account.pending:'')));
+        if(account.error)form.append(element('p','cui-error',account.error));
+      }
+      if(Object.values(sync.accounts??{}).some(a=>a.state==='waiting'))form.append(element('p','','Если приложение показывает «Trust this folder?», ответьте в его штатном диалоге. Изменение продолжится после ответа.'));
+      for(const item of sync.conflicts??[]){
+        const box=element('div');box.append(element('strong','',item.projectName??'Проект'));
+        const field={name:'Название',rootPaths:'Рабочие папки',folder:'Папка',presence:'Наличие проекта'}[item.field]??'Изменение';
+        const display=value=>Array.isArray(value)?value.join(' · '):String(value??'корень');
+        box.append(element('p','',field+': '+(item.kind==='missing'?'проект отсутствует в '+item.profile:'общее «'+display(item.sharedValue)+'», '+item.profile+' «'+display(item.localValue)+'»')));
+        const actions=element('div','cui-dialog-footer');
+        const resolve=async choice=>{try{state=await request({type:'resolve-conflict',id:item.id,choice});closeDialog();sharedStatus();}catch(e){notify(e.message)}};
+        actions.append(button(item.kind==='missing'?'Восстановить в '+item.profile:'Оставить общее',item.kind==='missing'?'Восстановить':'Оставить общее',()=>resolve('shared')),
+          button(item.kind==='missing'?'Удалить для всех':'Принять изменение '+item.profile,item.kind==='missing'?'Удалить для всех':'Принять '+item.profile,()=>resolve('local')));
+        box.append(actions);form.append(box);
+      }
+      if(Object.values(sync.accounts??{}).some(a=>['paused','unsupported'].includes(a.state))){
+        form.append(element('p','','Проекты сохранены. Если приложение обновилось, помощник проверит подключение повторно.'));
+        form.append(button('Повторить синхронизацию','Повторить',async()=>{try{state=await request({type:'retry-sync'});closeDialog();sharedStatus();}catch(e){notify(e.message)}}));
+      }
+    },async()=>{},'Готово');
+  }
   function dragData(event) {
     try {return JSON.parse(event.dataTransfer.getData('application/x-codex-folder'))}catch{return null}
   }
@@ -121,6 +157,7 @@ function installCodexFolders(options) {
       for(const [row,b] of rowButtons)if(!row.isConnected){b.remove();rowButtons.delete(row)}
       for(const [list,root] of roots)if(!list.isConnected){root.remove();roots.delete(list)}
       for(const [section,toolbar] of toolbars)if(!section.isConnected){toolbar.remove();toolbars.delete(section)}
+      const projectRanks=new Map((state.projectOrder??[]).map((key,index)=>[key,index]));
       const lists=new Map();
       for(const row of document.querySelectorAll('[data-app-action-sidebar-project-row]')) {
         if(!row.closest('[data-app-action-sidebar-section]')?.querySelector('[data-app-action-sidebar-project-create]'))continue;
@@ -134,8 +171,9 @@ function installCodexFolders(options) {
         if(heading?.parentElement&&!toolbars.get(section)?.isConnected){
           const bar=element('span','cui-toolbar');bar.dataset.codexUi='toolbar';
           const add=button('Создать корневую папку','',()=>{if(section.dataset.appActionSidebarSectionCollapsed==='true')heading.click();createFolder(null)},'cui-icon-button');add.innerHTML=icon+'<span>+</span>';
-          bar.append(add);dropTarget(bar,null);heading.parentElement.append(bar);toolbars.set(section,bar);
+          bar.append(add);if(state.sync?.shared)bar.append(button(syncTitle(),'⇄',sharedStatus,'cui-icon-button cui-sync'));dropTarget(bar,null);heading.parentElement.append(bar);toolbars.set(section,bar);
         }
+        const syncButton=toolbars.get(section)?.querySelector('.cui-sync');if(syncButton){syncButton.title=syncTitle();syncButton.setAttribute('aria-label',syncTitle());}
         const fallback=fallbacks.get(section);
         if(section.querySelector('[data-app-action-sidebar-project-row]')){fallback?.remove();fallbacks.delete(section)}
         else if(section.dataset.appActionSidebarSectionCollapsed!=='true'){
@@ -164,7 +202,7 @@ function installCodexFolders(options) {
             const f=folderRow(folder,depth,++order);f.toggleAttribute('data-cui-hidden',hidden);fragment.append(f);
             visit(folder.id,depth+1,hidden||state.collapsedFolderIds.includes(folder.id));
           }
-          for(const item of items.filter(i=>(state.projectFolderMap[i.key]??null)===parentId).sort((a,b)=>parentId?collator.compare(a.label,b.label):0))place(item,depth,hidden);
+          for(const item of items.filter(i=>(state.projectFolderMap[i.key]??null)===parentId).sort((a,b)=>{const ar=projectRanks.get(a.key),br=projectRanks.get(b.key);return ar!==undefined&&br!==undefined?ar-br:parentId?collator.compare(a.label,b.label):0;}))place(item,depth,hidden);
         }
         visit(null,0,false);root.replaceChildren(fragment);
       }

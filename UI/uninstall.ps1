@@ -8,4 +8,4 @@ foreach($file in $manifest.files) {
 $nodePath=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'node-path.txt')).Trim()
 & $nodePath (Join-Path $PSScriptRoot 'manage.mjs') stop
 foreach($file in $manifest.files) {Copy-Item -LiteralPath $file.backup -Destination $file.path -Force}
-Write-Output 'Подключение UI отключено. Данные ui-folders.json сохранены в профилях.'
+Write-Output 'Подключение UI отключено. Общий каталог Shared-Projects, штатные проекты и прежние ui-folders.json сохранены.'

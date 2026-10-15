@@ -14,12 +14,12 @@ export class CDP {
     return new CDP(socket);
   }
   on(event,handler) {const handlers=this.listeners.get(event)??new Set();handlers.add(handler);this.listeners.set(event,handlers)}
-  call(method,params={}) {
+  call(method,params={},timeoutMs=10000) {
     if(this.closed)return Promise.reject(Error('CDP disconnected'));
-    return new Promise((resolve,reject)=>{const id=++this.sequence;const timer=setTimeout(()=>{this.pending.delete(id);reject(Error(method+' timed out'))},10000);this.pending.set(id,{resolve,reject,timer});this.socket.send(JSON.stringify({id,method,params}))});
+    return new Promise((resolve,reject)=>{const id=++this.sequence;const timer=setTimeout(()=>{this.pending.delete(id);reject(Error(method+' timed out'))},timeoutMs);this.pending.set(id,{resolve,reject,timer});this.socket.send(JSON.stringify({id,method,params}))});
   }
-  async evaluate(expression) {
-    const result=await this.call('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true});
+  async evaluate(expression,timeoutMs=10000) {
+    const result=await this.call('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true},timeoutMs);
     if(result.exceptionDetails)throw Error(result.exceptionDetails.exception?.description??result.exceptionDetails.text);
     return result.result?.value;
   }
