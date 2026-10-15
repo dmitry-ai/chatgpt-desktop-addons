@@ -578,3 +578,14 @@
 [2026-10-15 00:20:40.059] C2 ready (PID: 12036, HWND: 0x400A0, window wait: 7654 ms).
 [2026-10-15 00:20:40.192] C2 icon and grouping applied (HWND: 0x400A0).
 [2026-10-15 00:20:40.237] C2 activation requested (HWND: 0x400A0, foreground: True).
+[2026-10-15 02:19:03.129] C2 window was closed; stopping only its verified process tree.
+[2026-10-15 02:19:11.965] Stopped the verified C2 process tree.
+[2026-10-15 02:19:11.970] === C2 supervisor exited cleanly ===
+[2026-10-15 02:57:03.768] === ChatGPT2Launcher invoked ===
+[2026-10-15 02:57:03.977] Execution alias verified: C:\Program Files\WindowsApps\OpenAI.Codex_26.1007.9446.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe; app ID: OpenAI.Codex_2p2nqsd0c76g0!App.
+[2026-10-15 02:57:08.299] === ChatGPT2Launcher invoked ===
+[2026-10-15 02:57:08.302] Existing supervisor notified; no second application was launched.
+[2026-10-15 02:57:10.559] C2 ready (PID: 22920, HWND: 0x3306D6, window wait: 6549 ms).
+[2026-10-15 02:57:10.616] C2 icon and grouping applied (HWND: 0x3306D6).
+[2026-10-15 02:57:10.666] C2 activation requested (HWND: 0x3306D6, foreground: False).
+[2026-10-15 02:57:10.750] C2 activation requested (HWND: 0x3306D6, foreground: False).
