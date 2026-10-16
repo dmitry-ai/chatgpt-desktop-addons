@@ -1,7 +1,8 @@
 param(
     [string]$OutputDirectory = $PSScriptRoot,
     [switch]$Test,
-    [switch]$RuntimeTest
+    [switch]$RuntimeTest,
+    [switch]$LifecycleTest
 )
 $ErrorActionPreference = 'Stop'
 $buildOutput = [IO.Path]::GetFullPath($OutputDirectory)
@@ -13,7 +14,7 @@ $compilerArguments = @('/nologo','/platform:x64','/optimize+','/reference:System
 $launcherOutput = Join-Path $buildOutput 'ChatGPT2Launcher.exe'
 & $compilerPath @compilerArguments /target:winexe "/win32icon:$PSScriptRoot\ChatGPT2.ico" "/out:$launcherOutput" @sourceFiles
 if ($LASTEXITCODE -ne 0) { throw "Launcher compilation failed ($LASTEXITCODE)." }
-if ($Test -or $RuntimeTest) {
+if ($Test -or $RuntimeTest -or $LifecycleTest) {
     $testOutput = Join-Path $buildOutput 'LauncherTests.exe'
     & $compilerPath @compilerArguments /target:exe /main:LauncherTests "/out:$testOutput" @sourceFiles (Join-Path $PSScriptRoot 'tests\LauncherTests.cs')
     if ($LASTEXITCODE -ne 0) { throw "Test compilation failed ($LASTEXITCODE)." }
@@ -21,5 +22,15 @@ if ($Test -or $RuntimeTest) {
     if ($RuntimeTest) { $testArguments += '--runtime' }
     & $testOutput @testArguments
     if ($LASTEXITCODE -ne 0) { throw "Launcher tests failed ($LASTEXITCODE)." }
+}
+if ($LifecycleTest) {
+    $windowHost = Join-Path $buildOutput 'WindowLifecycleHost.exe'
+    & $compilerPath /nologo /platform:x64 /target:winexe /reference:System.Windows.Forms.dll /reference:System.Drawing.dll "/out:$windowHost" (Join-Path $PSScriptRoot 'tests\WindowLifecycleHost.cs')
+    if ($LASTEXITCODE -ne 0) { throw "Window fixture compilation failed ($LASTEXITCODE)." }
+    $regressionOutput = Join-Path $buildOutput 'SupervisorRegression.exe'
+    & $compilerPath @compilerArguments /target:exe /main:SupervisorRegression "/out:$regressionOutput" @sourceFiles (Join-Path $PSScriptRoot 'tests\SupervisorRegression.cs')
+    if ($LASTEXITCODE -ne 0) { throw "Supervisor regression compilation failed ($LASTEXITCODE)." }
+    & $regressionOutput $windowHost (Join-Path $PSScriptRoot 'ChatGPT2.ico')
+    if ($LASTEXITCODE -ne 0) { throw "Supervisor lifecycle checks failed ($LASTEXITCODE)." }
 }
 Write-Output "Launcher built: $launcherOutput"

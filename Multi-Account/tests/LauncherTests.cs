@@ -146,13 +146,14 @@ public static class LauncherTests {
                 Assert(Environment.GetEnvironmentVariable("CODEX_ELECTRON_USER_DATA_PATH") == beforeData, "Parent profile was changed.");
                 var timer = Stopwatch.StartNew();
                 bool visible = false;
+                IntPtr mainWindow = IntPtr.Zero;
                 ChatGPT2Launcher.EnumWindowsProc callback = (window, ignored) => {
                     uint pid;
                     ChatGPT2Launcher.GetWindowThreadProcessId(window, out pid);
                     ChatGPT2Launcher.RECT rect;
                     if (pid == (uint)process.Id && ChatGPT2Launcher.IsWindowVisible(window) &&
                         ChatGPT2Launcher.GetWindowRect(window, out rect) &&
-                        rect.Width > 200 && rect.Height > 200) visible = true;
+                        rect.Width > 200 && rect.Height > 200) { visible = true; mainWindow = window; }
                     return true;
                 };
                 while (timer.ElapsedMilliseconds < 30000 && !visible) {
@@ -164,6 +165,17 @@ public static class LauncherTests {
                 using (var recovered = C2Process.FindExisting(alias, 19224)) {
                     Assert(recovered != null && recovered.Id == process.Id, "Could not recover verified instance.");
                 }
+                ChatGPT2Launcher.ShowWindow(mainWindow, 0);
+                visible = false;
+                C2Process.RequestActivation(alias, profile, Path.GetDirectoryName(package.Executable), 19224);
+                timer.Restart();
+                while (timer.ElapsedMilliseconds < 10000 && !visible) {
+                    Assert(!process.HasExited, "Single-instance activation replaced the original application process.");
+                    ChatGPT2Launcher.EnumDesktopWindows(desktop, callback, IntPtr.Zero);
+                    Thread.Sleep(100);
+                }
+                Assert(visible, "The application's single-instance handler did not restore its hidden window.");
+                Console.WriteLine("ACTIVATION restored hidden Codex window in " + timer.ElapsedMilliseconds + " ms; original PID=" + process.Id);
                 Assert(Directory.GetFileSystemEntries(profile).Length > 0, "Isolated profile remained empty.");
                 Console.WriteLine("RUNTIME PID=" + process.Id + ", window wait=" + timer.ElapsedMilliseconds + " ms");
             } finally {

@@ -191,19 +191,25 @@ public class ChatGPT2Launcher {
                     s_hDesktop = OpenDesktop("Default", 0, false, DESKTOP_ACCESS);
                     if (s_hDesktop == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot open the interactive desktop.");
                     Directory.CreateDirectory(profile);
-                    using (Process target = C2Process.FindExisting(alias, CDP_PORT_C2) ?? Launch(alias, profile)) {
+                    Process existing = C2Process.FindExisting(alias, CDP_PORT_C2);
+                    using (Process target = existing ?? Launch(alias, profile)) {
                         if (!CodexPackage.Owns(target)) throw new InvalidOperationException("The launched process is not a Codex package.");
+                        if (existing != null && FindVisibleWindowsForProcess(target.Id, s_hDesktop).Count == 0) {
+                            RequestApplicationWindow(alias, profile);
+                            Log("Existing C2 has no visible main window; restoration requested.");
+                        }
                         var timer = Stopwatch.StartNew();
                         IntPtr window = IntPtr.Zero;
                         while (timer.ElapsedMilliseconds < 30000) {
                             if (target.HasExited) throw new InvalidOperationException("Codex exited before creating its window (exit code " + target.ExitCode + ").");
-                            var windows = FindVisibleWindowsForProcess(target.Id);
+                            var windows = FindVisibleWindowsForProcess(target.Id, s_hDesktop);
                             if (windows.Count > 0) { window = windows[0]; break; }
                             Thread.Sleep(100);
                         }
                         if (window == IntPtr.Zero) throw new TimeoutException("Codex did not create its window within 30 seconds.");
                         Log(string.Format("C2 ready (PID: {0}, HWND: 0x{1:X}, window wait: {2} ms).", target.Id, window.ToInt64(), timer.ElapsedMilliseconds));
-                        RunSupervisor(target, window, Path.Combine(appDir, "ChatGPT2.ico"), activation);
+                        RunSupervisor(target, window, Path.Combine(appDir, "ChatGPT2.ico"), activation,
+                            s_hDesktop, () => RequestApplicationWindow(alias, profile));
                     }
                 }
                 Log("=== C2 supervisor exited cleanly ===");
@@ -257,6 +263,11 @@ public class ChatGPT2Launcher {
         throw new InvalidOperationException("Unreachable launch state.");
     }
 
+    private static void RequestApplicationWindow(string alias, string profile) {
+        CodexPackage package = RepairAlias(alias);
+        C2Process.RequestActivation(alias, profile, Path.GetDirectoryName(package.Executable), CDP_PORT_C2);
+    }
+
     private static void ActivateHwnd(IntPtr window) {
         IntPtr foreground = GetForegroundWindow();
         uint foregroundThread = 0;
@@ -276,34 +287,51 @@ public class ChatGPT2Launcher {
         }
     }
 
-    private static void RunSupervisor(Process target, IntPtr window, string iconPath, EventWaitHandle activation) {
+    internal static void RunSupervisor(Process target, IntPtr window, string iconPath,
+        EventWaitHandle activation, IntPtr desktop, Action requestApplicationWindow) {
         IntPtr big = LoadImage(IntPtr.Zero, iconPath, IMAGE_ICON, 32, 32, LR_LOADFROMFILE);
         IntPtr small = LoadImage(IntPtr.Zero, iconPath, IMAGE_ICON, 16, 16, LR_LOADFROMFILE);
         try {
             if (big == IntPtr.Zero || small == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot load the C2 icon.");
             ApplyWindowProperties(window, big, small, iconPath);
             ActivateHwnd(window);
-            long disappearedAt = -1;
-            var timer = Stopwatch.StartNew();
+            // A hidden, closed-to-tray or recreated window is not process termination.
+            // Only the application's actual exit ends this supervisor.
+            bool waitingForWindow = false;
+            IntPtr lastWindow = window;
+            var styled = new HashSet<IntPtr> { window };
             int cycle = 0;
             while (!target.HasExited) {
                 bool activate = activation.WaitOne(500);
-                var windows = FindVisibleWindowsForProcess(target.Id);
+                var windows = FindVisibleWindowsForProcess(target.Id, desktop);
                 if (windows.Count == 0) {
-                    if (disappearedAt < 0) disappearedAt = timer.ElapsedMilliseconds;
-                    if (timer.ElapsedMilliseconds - disappearedAt >= 2000) {
-                        Log("C2 window was closed; stopping only its verified process tree.");
-                        C2Process.StopOwnedTree(target, Log);
-                        return;
+                    if (!waitingForWindow) {
+                        Log("C2 has no visible main window; leaving the application running.");
+                        waitingForWindow = true;
+                    }
+                    if (activate && !target.HasExited) {
+                        uint ownerPid;
+                        if (GetWindowThreadProcessId(lastWindow, out ownerPid) != 0 && ownerPid == (uint)target.Id) {
+                            ActivateHwnd(lastWindow);
+                        } else {
+                            // The old HWND was destroyed. Let the app's single-instance
+                            // handler create its own main window; never show prewarm windows.
+                            requestApplicationWindow();
+                            Log("C2 window recreation requested through the application.");
+                        }
                     }
                     continue;
                 }
-                disappearedAt = -1;
+                if (waitingForWindow) Log("C2 main window is visible again.");
+                waitingForWindow = false;
+                lastWindow = windows[0];
                 foreach (IntPtr hwnd in windows) {
                     UIntPtr current;
                     IntPtr result = SendMessageTimeout(hwnd, WM_GETICON, (UIntPtr)ICON_SMALL, IntPtr.Zero, SMTO_ABORTIFHUNG, 500, out current);
-                    if (result != IntPtr.Zero && (current.ToUInt64() & 0xFFFFFFFFL) != ((ulong)small.ToInt64() & 0xFFFFFFFFL)) {
+                    if (!styled.Contains(hwnd) || (result != IntPtr.Zero &&
+                        (current.ToUInt64() & 0xFFFFFFFFL) != ((ulong)small.ToInt64() & 0xFFFFFFFFL))) {
                         ApplyWindowProperties(hwnd, big, small, iconPath);
+                        styled.Add(hwnd);
                     } else if (cycle % 10 == 0) {
                         var title = new StringBuilder(256);
                         GetWindowText(hwnd, title, title.Capacity);
@@ -347,7 +375,7 @@ public class ChatGPT2Launcher {
         }
     }
 
-    private static List<IntPtr> FindVisibleWindowsForProcess(int pid) {
+    private static List<IntPtr> FindVisibleWindowsForProcess(int pid, IntPtr desktop) {
         var result = new List<IntPtr>();
         EnumWindowsProc callback = (window, data) => {
             uint windowPid;
@@ -360,7 +388,7 @@ public class ChatGPT2Launcher {
                 (IsIconic(window) || (rect.Left <= -10000 && rect.Top <= -10000) || (rect.Width > 200 && rect.Height > 200))) result.Add(window);
             return true;
         };
-        if (!EnumDesktopWindows(s_hDesktop, callback, IntPtr.Zero)) {
+        if (!EnumDesktopWindows(desktop, callback, IntPtr.Zero)) {
             throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot enumerate C2 windows.");
         }
         return result;

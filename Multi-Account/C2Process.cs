@@ -77,7 +77,7 @@ public static class C2Process {
         }
     }
 
-    public static Process Start(string alias, string profile, string workingDirectory, int debugPort) {
+    private static ProcessInfo CreateChild(string alias, string profile, string workingDirectory, int debugPort) {
         var values = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (System.Collections.DictionaryEntry item in Environment.GetEnvironmentVariables()) {
             values[(string)item.Key] = (string)item.Value;
@@ -98,22 +98,35 @@ public static class C2Process {
                 environment, workingDirectory, ref startup, out info)) {
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot start the Codex execution alias.");
             }
-            try {
-                var process = Process.GetProcessById(info.pid);
-                try {
-                    IntPtr pinned = process.Handle;
-                    return process;
-                } catch {
-                    process.Dispose();
-                    throw;
-                }
-            } finally {
-                CloseHandle(info.thread);
-                CloseHandle(info.process);
-            }
+            return info;
         } finally {
             Marshal.FreeHGlobal(environment);
         }
+    }
+
+    public static Process Start(string alias, string profile, string workingDirectory, int debugPort) {
+        ProcessInfo info = CreateChild(alias, profile, workingDirectory, debugPort);
+        try {
+            var process = Process.GetProcessById(info.pid);
+            try {
+                IntPtr pinned = process.Handle;
+                return process;
+            } catch {
+                process.Dispose();
+                throw;
+            }
+        } finally {
+            CloseHandle(info.thread);
+            CloseHandle(info.process);
+        }
+    }
+
+    public static void RequestActivation(string alias, string profile, string workingDirectory, int debugPort) {
+        // The second instance may exit immediately after notifying the existing app.
+        // Do not attempt to adopt that short-lived process as a new C2 instance.
+        ProcessInfo info = CreateChild(alias, profile, workingDirectory, debugPort);
+        CloseHandle(info.thread);
+        CloseHandle(info.process);
     }
 
     public static void StopOwnedTree(Process root, Action<string> log) {
