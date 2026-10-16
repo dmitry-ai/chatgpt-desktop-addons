@@ -10,15 +10,14 @@ public static class AliasActivationRegression {
         using (var output = new StreamWriter(args[1], false) { AutoFlush = true }) {
             Console.SetOut(output);
             Console.SetError(output);
-            string home = Path.Combine(Path.GetTempPath(), "C2StartupRegression-" + Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(home);
+            string home = TestWorkspace.CreateDirectory("startup");
             Process target = null;
             Thread observer = null;
             IntPtr desktop = IntPtr.Zero;
             Exception observationFailure = null;
             try {
                 var package = CodexPackage.Resolve(Console.WriteLine);
-                string alias = Path.Combine(home, "c2-startup-regression.exe");
+                string alias = TestWorkspace.AliasFile(home, "startup");
                 string profile = Path.Combine(home, "profile");
                 Directory.CreateDirectory(profile);
                 AppExecLink.Ensure(alias, CodexPackage.Family, package.AppUserModelId, package.Executable);
@@ -74,7 +73,6 @@ public static class AliasActivationRegression {
                     try { C2Process.StopOwnedTree(target, Console.WriteLine); } finally { target.Dispose(); }
                 }
                 if (desktop != IntPtr.Zero) ChatGPT2Launcher.CloseDesktop(desktop);
-                Console.WriteLine("Artifacts: " + home);
             }
         }
     }

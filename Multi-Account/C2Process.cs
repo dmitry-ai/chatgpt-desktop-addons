@@ -84,6 +84,9 @@ public static class C2Process {
         }
         values["CODEX_HOME"] = profile;
         values["CODEX_ELECTRON_USER_DATA_PATH"] = profile;
+        // C1 manages the shared MSIX installation. A second updater in C2
+        // races over the same prepared package and leaves a redundant update button.
+        values["CODEX_SPARKLE_ENABLED"] = "false";
         var block = new StringBuilder();
         foreach (var pair in values) block.Append(pair.Key).Append('=').Append(pair.Value).Append('\0');
         block.Append('\0');

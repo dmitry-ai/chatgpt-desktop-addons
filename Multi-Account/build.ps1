@@ -24,30 +24,57 @@ function Invoke-HiddenRegression {
 }
 & $compilerPath @compilerArguments /target:winexe "/win32icon:$PSScriptRoot\ChatGPT2.ico" "/out:$launcherOutput" @sourceFiles
 if ($LASTEXITCODE -ne 0) { throw "Launcher compilation failed ($LASTEXITCODE)." }
-if ($Test -or $RuntimeTest -or $LifecycleTest) {
-    $testOutput = Join-Path $buildOutput 'LauncherTests.exe'
-    & $compilerPath @compilerArguments /target:exe /main:LauncherTests "/out:$testOutput" @sourceFiles (Join-Path $PSScriptRoot 'tests\LauncherTests.cs')
+if (-not ($Test -or $RuntimeTest -or $LifecycleTest)) {
+    Write-Output "Launcher built: $launcherOutput"
+    return
+}
+$testRunId = [Guid]::NewGuid().ToString('N')
+$temporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
+$testRunRoot = Join-Path $temporaryRoot ('CodexC2Run-' + $testRunId)
+$testBin = Join-Path $testRunRoot 'bin'
+$originalTestRoot = $env:CODEX_C2_TEST_RUN_ROOT
+$env:CODEX_C2_TEST_RUN_ROOT = $testRunRoot
+$testSupport = Join-Path $PSScriptRoot 'tests\TestWorkspace.cs'
+try {
+    New-Item -ItemType Directory -Path $testBin | Out-Null
+    $testOutput = Join-Path $testBin 'LauncherTests.exe'
+    & $compilerPath @compilerArguments /target:exe /main:LauncherTests "/out:$testOutput" @sourceFiles $testSupport (Join-Path $PSScriptRoot 'tests\LauncherTests.cs')
     if ($LASTEXITCODE -ne 0) { throw "Test compilation failed ($LASTEXITCODE)." }
     $testArguments = @()
     if ($RuntimeTest) { $testArguments += '--runtime' }
     & $testOutput @testArguments
     if ($LASTEXITCODE -ne 0) { throw "Launcher tests failed ($LASTEXITCODE)." }
-}
-if ($RuntimeTest) {
-    $activationOutput = Join-Path $buildOutput 'AliasActivationRegression.exe'
-    & $compilerPath @compilerArguments /target:winexe /main:AliasActivationRegression "/out:$activationOutput" @sourceFiles (Join-Path $PSScriptRoot 'tests\AliasActivationRegression.cs')
-    if ($LASTEXITCODE -ne 0) { throw "Alias activation regression compilation failed ($LASTEXITCODE)." }
-    Invoke-HiddenRegression -Program $activationOutput -TargetArguments @((Join-Path $PSScriptRoot 'ChatGPT2.ico')) `
-        -ResultLog (Join-Path $buildOutput 'alias-activation-regression.log')
-}
-if ($LifecycleTest) {
-    $windowHost = Join-Path $buildOutput 'WindowLifecycleHost.exe'
-    & $compilerPath /nologo /platform:x64 /target:winexe /reference:System.Windows.Forms.dll /reference:System.Drawing.dll "/out:$windowHost" (Join-Path $PSScriptRoot 'tests\WindowLifecycleHost.cs')
-    if ($LASTEXITCODE -ne 0) { throw "Window fixture compilation failed ($LASTEXITCODE)." }
-    $regressionOutput = Join-Path $buildOutput 'SupervisorRegression.exe'
-    & $compilerPath @compilerArguments /target:winexe /main:SupervisorRegression "/out:$regressionOutput" @sourceFiles (Join-Path $PSScriptRoot 'tests\SupervisorRegression.cs')
-    if ($LASTEXITCODE -ne 0) { throw "Supervisor regression compilation failed ($LASTEXITCODE)." }
-    $regressionLog = Join-Path $buildOutput 'supervisor-regression.log'
-    Invoke-HiddenRegression -Program $regressionOutput -TargetArguments @($windowHost, (Join-Path $PSScriptRoot 'ChatGPT2.ico')) -ResultLog $regressionLog
+    if ($RuntimeTest) {
+        $activationOutput = Join-Path $testBin 'AliasActivationRegression.exe'
+        & $compilerPath @compilerArguments /target:winexe /main:AliasActivationRegression "/out:$activationOutput" @sourceFiles $testSupport (Join-Path $PSScriptRoot 'tests\AliasActivationRegression.cs')
+        if ($LASTEXITCODE -ne 0) { throw "Alias activation regression compilation failed ($LASTEXITCODE)." }
+        Invoke-HiddenRegression -Program $activationOutput -TargetArguments @((Join-Path $PSScriptRoot 'ChatGPT2.ico')) `
+            -ResultLog (Join-Path $testBin 'alias-activation-regression.log')
+    }
+    if ($LifecycleTest) {
+        $windowHost = Join-Path $testBin 'WindowLifecycleHost.exe'
+        & $compilerPath /nologo /platform:x64 /target:winexe /reference:System.Windows.Forms.dll /reference:System.Drawing.dll "/out:$windowHost" (Join-Path $PSScriptRoot 'tests\WindowLifecycleHost.cs')
+        if ($LASTEXITCODE -ne 0) { throw "Window fixture compilation failed ($LASTEXITCODE)." }
+        $regressionOutput = Join-Path $testBin 'SupervisorRegression.exe'
+        & $compilerPath @compilerArguments /target:winexe /main:SupervisorRegression "/out:$regressionOutput" @sourceFiles $testSupport (Join-Path $PSScriptRoot 'tests\SupervisorRegression.cs')
+        if ($LASTEXITCODE -ne 0) { throw "Supervisor regression compilation failed ($LASTEXITCODE)." }
+        $regressionLog = Join-Path $testBin 'supervisor-regression.log'
+        Invoke-HiddenRegression -Program $regressionOutput -TargetArguments @($windowHost, (Join-Path $PSScriptRoot 'ChatGPT2.ico')) -ResultLog $regressionLog
+    }
+} finally {
+    $env:CODEX_C2_TEST_RUN_ROOT = $originalTestRoot
+    $webRoot = [IO.Path]::GetFullPath((Join-Path $env:APPDATA 'Codex\web')).TrimEnd('\')
+    foreach ($kind in @('runtime', 'startup')) {
+        $testWebProfile = [IO.Path]::GetFullPath((Join-Path $webRoot ('c2-launcher-test-' + $testRunId + '-' + $kind)))
+        if ([IO.Path]::GetDirectoryName($testWebProfile) -ne $webRoot) { throw "Unsafe test profile path: $testWebProfile" }
+        if (Test-Path -LiteralPath $testWebProfile) { Remove-Item -LiteralPath $testWebProfile -Recurse -Force }
+    }
+    $resolvedTestRoot = [IO.Path]::GetFullPath($testRunRoot)
+    if ([IO.Path]::GetDirectoryName($resolvedTestRoot) -ne $temporaryRoot -or
+        [IO.Path]::GetFileName($resolvedTestRoot) -ne ('CodexC2Run-' + $testRunId)) {
+        throw "Unsafe test cleanup path: $resolvedTestRoot"
+    }
+    if (Test-Path -LiteralPath $resolvedTestRoot) { Remove-Item -LiteralPath $resolvedTestRoot -Recurse -Force }
+    Write-Output 'Temporary test builds and profiles removed.'
 }
 Write-Output "Launcher built: $launcherOutput"

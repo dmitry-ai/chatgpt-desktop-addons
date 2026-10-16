@@ -172,8 +172,8 @@ public class ChatGPT2Launcher {
     [STAThread]
     public static int Main(string[] args) {
         string appDir = AppDomain.CurrentDomain.BaseDirectory;
-        logPath = Path.Combine(appDir, "launcher.log");
         string profile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Codex-Profile2");
+        logPath = Path.Combine(profile, "launcher.log");
         string alias = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             @"Microsoft\WindowsApps\ChatGPT2.exe");
         bool diagnostic = args.Length == 1 && args[0] == "--repair-alias";

@@ -130,12 +130,13 @@ public static class LauncherTests {
     private static void RuntimeTest() {
         Test("direct alias launch gets real PID, isolates profile and leaves parent environment intact", () => {
             CodexPackage package = CodexPackage.Resolve(Console.WriteLine);
-            string alias = Alias("runtime");
+            string alias = TestWorkspace.AliasFile(workspace, "runtime");
             string profile = Path.Combine(workspace, "runtime-profile");
             Directory.CreateDirectory(profile);
             AppExecLink.Ensure(alias, CodexPackage.Family, package.AppUserModelId, package.Executable);
             string beforeHome = Environment.GetEnvironmentVariable("CODEX_HOME");
             string beforeData = Environment.GetEnvironmentVariable("CODEX_ELECTRON_USER_DATA_PATH");
+            string beforeUpdater = Environment.GetEnvironmentVariable("CODEX_SPARKLE_ENABLED");
             Process process = null;
             IntPtr desktop = ChatGPT2Launcher.OpenDesktop("Default", 0, false, ChatGPT2Launcher.DESKTOP_ACCESS);
             Assert(desktop != IntPtr.Zero, "Cannot inspect default desktop.");
@@ -144,6 +145,7 @@ public static class LauncherTests {
                 Assert(CodexPackage.Owns(process), "Direct launch returned the wrong process.");
                 Assert(Environment.GetEnvironmentVariable("CODEX_HOME") == beforeHome, "Parent CODEX_HOME was changed.");
                 Assert(Environment.GetEnvironmentVariable("CODEX_ELECTRON_USER_DATA_PATH") == beforeData, "Parent profile was changed.");
+                Assert(Environment.GetEnvironmentVariable("CODEX_SPARKLE_ENABLED") == beforeUpdater, "Parent updater setting was changed.");
                 var timer = Stopwatch.StartNew();
                 bool visible = false;
                 IntPtr mainWindow = IntPtr.Zero;
@@ -189,16 +191,14 @@ public static class LauncherTests {
     }
 
     public static int Main(string[] args) {
-        workspace = Path.Combine(Path.GetTempPath(), "CodexC2Tests-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(workspace);
         try {
+            workspace = TestWorkspace.CreateDirectory("core");
             CoreTests();
             if (args.Contains("--runtime")) RuntimeTest();
-            Console.WriteLine("RESULT " + passed + " tests passed. Artifacts: " + workspace);
+            Console.WriteLine("RESULT " + passed + " tests passed.");
             return 0;
         } catch (Exception ex) {
             Console.Error.WriteLine("FAIL " + ex);
-            Console.Error.WriteLine("Artifacts: " + workspace);
             return 1;
         }
     }

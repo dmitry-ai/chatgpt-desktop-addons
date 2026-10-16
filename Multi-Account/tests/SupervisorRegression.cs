@@ -15,8 +15,7 @@ public static class SupervisorRegression {
     }
 
     private static int Run(string[] args) {
-        string home = Path.Combine(Path.GetTempPath(), "C2WindowRegression-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(home);
+        string home = TestWorkspace.CreateDirectory("window");
         string prefix = @"Local\CodexC2WindowTest-" + Path.GetFileName(home);
         using (var ready = new EventWaitHandle(false, EventResetMode.ManualReset, prefix + "-Ready"))
         using (var hide = new EventWaitHandle(false, EventResetMode.AutoReset, prefix + "-Hide"))
