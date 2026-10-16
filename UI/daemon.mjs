@@ -5,6 +5,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {CDP} from './cdp.mjs';
 import {profiles,pipeName} from './paths.mjs';
+import {createC1Recovery} from './recovery.mjs';
 import {CatalogStore,catalogFile} from '../../Shared-Projects/code/catalog.mjs';
 import {ProjectSynchronizer} from '../../Shared-Projects/code/sync.mjs';
 
@@ -14,6 +15,7 @@ const cssFile=path.resolve(code,'../../CSS/code/style.css');
 const logFile=path.join(code,'ui.log');
 const clients=new Map(),connecting=new Set(),watchers=[];
 const catalog=new CatalogStore();
+const recovery=createC1Recovery(profiles.find(p=>p.id==='C1').home,log);
 let shared=null,renderer='',css='',stopping=false,scanTimer=null,startupError=null;
 async function log(message){await fs.appendFile(logFile,new Date().toISOString()+' '+message+'\n').catch(()=>{});}
 async function assets(){[renderer,css]=await Promise.all([fs.readFile(rendererFile,'utf8'),fs.readFile(cssFile,'utf8')]);}
@@ -85,10 +87,17 @@ async function scan(){
       const targets=await response.json();await Promise.allSettled(targets.filter(mainTarget).map(target=>attach(profile,target)));
     }catch{} // Closed accounts reconnect automatically.
   }));
+  const c1=[...clients.values()].some(c=>c.profile.id==='C1'&&c.installed&&!c.cdp.closed);
+  if(c1){
+    if(recovery&&recovery.status.state!=='connected'){
+      await log('C1 UI recovery verified: Folders/CSS installed');recovery.connected();
+    }
+  }else await recovery?.tick();
   if(!stopping)scanTimer=setTimeout(scan,2000);
 }
 async function shutdown(){
   if(stopping)return;stopping=true;clearTimeout(scanTimer);for(const watcher of watchers)watcher.close();
+  recovery?.stop();
   await shared?.stop();
   await Promise.allSettled([...clients.values()].map(async client=>{await client.cdp.evaluate('window.__codexSharedDesktop?.dispose();window.__codexUi?.dispose()');client.cdp.close();}));
   await log('UI helper stopped');server.close();setTimeout(()=>process.exit(0),100).unref();
@@ -100,7 +109,7 @@ const server=net.createServer(socket=>{
     try{
       const request=JSON.parse(buffer.slice(0,end));buffer='';let result;
       switch(request.command){
-        case 'status':result={pid:process.pid,ready:!!shared,error:startupError,shared:{file:catalogFile,revision:catalog.state?.revision,projects:Object.values(catalog.state?.projects??{}).filter(p=>!p.deleted).length,folders:catalog.state?.folders.length,conflicts:catalog.state?.conflicts,accounts:shared?.status()},profiles:profiles.map(p=>({id:p.id,file:catalogFile,revision:catalog.state?.revision})),clients:[...clients.values()].map(c=>({profile:c.profile.id,id:c.id,installed:c.installed,sharedReady:!!c.sharedReady,appVersion:c.sharedInfo?.appVersion}))};break;
+        case 'status':result={pid:process.pid,ready:!!shared,error:startupError,recovery:recovery?.status,shared:{file:catalogFile,revision:catalog.state?.revision,projects:Object.values(catalog.state?.projects??{}).filter(p=>!p.deleted).length,folders:catalog.state?.folders.length,conflicts:catalog.state?.conflicts,accounts:shared?.status()},profiles:profiles.map(p=>({id:p.id,file:catalogFile,revision:catalog.state?.revision})),clients:[...clients.values()].map(c=>({profile:c.profile.id,id:c.id,installed:c.installed,sharedReady:!!c.sharedReady,appVersion:c.sharedInfo?.appVersion}))};break;
         case 'state':result=state(request.profile??'C1');break;
         case 'operation':{const profile=profiles.find(p=>p.id===request.profile);if(!profile)throw Error('Неизвестный профиль');result=await operate(profile,request.operation);break;}
         case 'shared-catalog':result=catalog.state;break;

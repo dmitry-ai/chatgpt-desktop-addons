@@ -78,4 +78,4 @@ for($attempt=0;$attempt -lt 10;$attempt++) {
   if($LASTEXITCODE -eq 0) {break}
 }
 if($LASTEXITCODE -ne 0) {throw 'Помощник UI не запустился. Проверьте UI/code/ui.log.'}
-Write-Output 'Folders/CSS подключены к C1 и C2. Перезапуск Codex не требуется.'
+Write-Output 'Помощник Folders/CSS запущен. C1, потерявший UI-порт после обновления, будет штатно перезапущен после завершения активных ответов.'
