@@ -5,7 +5,16 @@ using System.Text;
 using System.Threading;
 
 public static class SupervisorRegression {
+    [STAThread]
     public static int Main(string[] args) {
+        using (var log = new StreamWriter(args[2], false) { AutoFlush = true }) {
+            Console.SetOut(log);
+            Console.SetError(log);
+            return Run(args);
+        }
+    }
+
+    private static int Run(string[] args) {
         string home = Path.Combine(Path.GetTempPath(), "C2WindowRegression-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(home);
         string prefix = @"Local\CodexC2WindowTest-" + Path.GetFileName(home);
@@ -40,6 +49,9 @@ public static class SupervisorRegression {
                 supervisor.IsBackground = true;
                 supervisor.Start();
                 Thread.Sleep(700);
+                if (!ChatGPT2Launcher.IsWindowVisible(window)) throw new Exception("REGRESSION: initial activation from the hidden GUI launcher hid the application window.");
+                if (failure != null) throw failure;
+                Console.WriteLine("PASS initial activation from a hidden GUI launcher keeps the application window visible.");
                 hide.Set();
                 Thread.Sleep(4000);
                 if (target.HasExited) throw new Exception("REGRESSION: supervisor terminated the application after its window was hidden.");

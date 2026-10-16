@@ -45,6 +45,9 @@ public class ChatGPT2Launcher {
     public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
     [DllImport("user32.dll")]
+    private static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("user32.dll")]
     public static extern bool SetForegroundWindow(IntPtr hWnd);
 
     [DllImport("user32.dll")]
@@ -278,10 +281,13 @@ public class ChatGPT2Launcher {
         try {
             RECT rect;
             bool minimized = GetWindowRect(window, out rect) && rect.Left <= -10000 && rect.Top <= -10000;
-            ShowWindow(window, IsIconic(window) || minimized ? SW_RESTORE : SW_SHOW);
+            // The launcher may itself have been started with SW_HIDE by WScript.
+            // ShowWindow can consume that startup state on its first call and hide
+            // the foreign window. Post an explicit show/restore to its owner instead.
+            bool queued = ShowWindowAsync(window, IsIconic(window) || minimized ? SW_RESTORE : SW_SHOW);
             BringWindowToTop(window);
             bool focused = SetForegroundWindow(window);
-            Log(string.Format("C2 activation requested (HWND: 0x{0:X}, foreground: {1}).", window.ToInt64(), focused));
+            Log(string.Format("C2 activation requested (HWND: 0x{0:X}, show queued: {1}, foreground: {2}).", window.ToInt64(), queued, focused));
         } finally {
             if (attached) AttachThreadInput(currentThread, foregroundThread, false);
         }

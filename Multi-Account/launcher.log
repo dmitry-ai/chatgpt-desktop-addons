@@ -689,3 +689,34 @@
 [2026-10-16 19:32:24.783] === ChatGPT2Launcher invoked ===
 [2026-10-16 19:32:24.786] Existing supervisor notified; no second application was launched.
 [2026-10-16 19:32:24.835] C2 activation requested (HWND: 0x2B1C0E, foreground: True).
+[2026-10-16 19:41:58.862] === ChatGPT2Launcher invoked ===
+[2026-10-16 19:41:59.085] Execution alias verified: C:\Program Files\WindowsApps\OpenAI.Codex_26.1007.9446.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe; app ID: OpenAI.Codex_2p2nqsd0c76g0!App.
+[2026-10-16 19:42:06.332] C2 ready (PID: 28896, HWND: 0x66A071E, window wait: 7210 ms).
+[2026-10-16 19:42:06.422] C2 icon and grouping applied (HWND: 0x66A071E).
+[2026-10-16 19:42:06.487] C2 activation requested (HWND: 0x66A071E, foreground: False).
+[2026-10-16 19:42:06.995] C2 has no visible main window; leaving the application running.
+[2026-10-16 19:45:13.570] === ChatGPT2Launcher invoked ===
+[2026-10-16 19:45:13.571] Existing supervisor notified; no second application was launched.
+[2026-10-16 19:45:13.598] C2 activation requested (HWND: 0x66A071E, foreground: False).
+[2026-10-16 19:45:14.124] C2 main window is visible again.
+[2026-10-16 20:03:11.382] C2 has no visible main window; leaving the application running.
+[2026-10-16 20:03:11.383] C2 application exited.
+[2026-10-16 20:03:11.383] === C2 supervisor exited cleanly ===
+[2026-10-16 20:07:04.543] === ChatGPT2Launcher invoked ===
+[2026-10-16 20:07:04.876] Execution alias verified: C:\Program Files\WindowsApps\OpenAI.Codex_26.1007.9446.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe; app ID: OpenAI.Codex_2p2nqsd0c76g0!App.
+[2026-10-16 20:07:08.874] C2 ready (PID: 33876, HWND: 0x4F0776, window wait: 3949 ms).
+[2026-10-16 20:07:08.993] C2 icon and grouping applied (HWND: 0x4F0776).
+[2026-10-16 20:07:09.032] C2 activation requested (HWND: 0x4F0776, show queued: True, foreground: True).
+[2026-10-16 20:08:16.834] C2 icon and grouping applied (HWND: 0x9102D6).
+[2026-10-16 20:08:16.836] C2 icon and grouping applied (HWND: 0x200696).
+[2026-10-16 20:08:46.499] === ChatGPT2Launcher invoked ===
+[2026-10-16 20:08:46.502] Existing supervisor notified; no second application was launched.
+[2026-10-16 20:08:46.510] C2 activation requested (HWND: 0x4F0776, show queued: True, foreground: True).
+[2026-10-16 20:08:46.677] === ChatGPT2Launcher invoked ===
+[2026-10-16 20:08:46.681] Existing supervisor notified; no second application was launched.
+[2026-10-16 20:08:46.694] C2 activation requested (HWND: 0x4F0776, show queued: True, foreground: True).
+[2026-10-16 20:12:46.370] C2 has no visible main window; leaving the application running.
+[2026-10-16 20:12:58.903] === ChatGPT2Launcher invoked ===
+[2026-10-16 20:12:58.906] Existing supervisor notified; no second application was launched.
+[2026-10-16 20:12:58.910] C2 activation requested (HWND: 0x4F0776, show queued: True, foreground: False).
+[2026-10-16 20:12:59.443] C2 main window is visible again.
