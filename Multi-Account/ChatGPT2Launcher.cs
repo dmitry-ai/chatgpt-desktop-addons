@@ -45,22 +45,7 @@ public class ChatGPT2Launcher {
     public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
     [DllImport("user32.dll")]
-    private static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
-
-    [DllImport("user32.dll")]
-    public static extern bool SetForegroundWindow(IntPtr hWnd);
-
-    [DllImport("user32.dll")]
-    public static extern bool BringWindowToTop(IntPtr hWnd);
-
-    [DllImport("user32.dll")]
     public static extern IntPtr GetForegroundWindow();
-
-    [DllImport("user32.dll")]
-    public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
-
-    [DllImport("kernel32.dll")]
-    public static extern uint GetCurrentThreadId();
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
@@ -101,6 +86,7 @@ public class ChatGPT2Launcher {
     public const uint SWP_NOMOVE = 0x0002;
     public const uint SWP_NOSIZE = 0x0001;
     public const uint SWP_NOZORDER = 0x0004;
+    public const uint SWP_NOACTIVATE = 0x0010;
     public const uint SWP_FRAMECHANGED = 0x0020;
     public const int SW_RESTORE = 9;
     public const int SW_SHOW = 5;
@@ -197,9 +183,9 @@ public class ChatGPT2Launcher {
                     Process existing = C2Process.FindExisting(alias, CDP_PORT_C2);
                     using (Process target = existing ?? Launch(alias, profile)) {
                         if (!CodexPackage.Owns(target)) throw new InvalidOperationException("The launched process is not a Codex package.");
-                        if (existing != null && FindVisibleWindowsForProcess(target.Id, s_hDesktop).Count == 0) {
+                        if (existing != null) {
                             RequestApplicationWindow(alias, profile);
-                            Log("Existing C2 has no visible main window; restoration requested.");
+                            Log("Existing C2 activation requested through the application.");
                         }
                         var timer = Stopwatch.StartNew();
                         IntPtr window = IntPtr.Zero;
@@ -271,28 +257,6 @@ public class ChatGPT2Launcher {
         C2Process.RequestActivation(alias, profile, Path.GetDirectoryName(package.Executable), CDP_PORT_C2);
     }
 
-    private static void ActivateHwnd(IntPtr window) {
-        IntPtr foreground = GetForegroundWindow();
-        uint foregroundThread = 0;
-        if (foreground != IntPtr.Zero) GetWindowThreadProcessId(foreground, out foregroundThread);
-        uint currentThread = GetCurrentThreadId();
-        bool attached = foregroundThread != 0 && foregroundThread != currentThread &&
-            AttachThreadInput(currentThread, foregroundThread, true);
-        try {
-            RECT rect;
-            bool minimized = GetWindowRect(window, out rect) && rect.Left <= -10000 && rect.Top <= -10000;
-            // The launcher may itself have been started with SW_HIDE by WScript.
-            // ShowWindow can consume that startup state on its first call and hide
-            // the foreign window. Post an explicit show/restore to its owner instead.
-            bool queued = ShowWindowAsync(window, IsIconic(window) || minimized ? SW_RESTORE : SW_SHOW);
-            BringWindowToTop(window);
-            bool focused = SetForegroundWindow(window);
-            Log(string.Format("C2 activation requested (HWND: 0x{0:X}, show queued: {1}, foreground: {2}).", window.ToInt64(), queued, focused));
-        } finally {
-            if (attached) AttachThreadInput(currentThread, foregroundThread, false);
-        }
-    }
-
     internal static void RunSupervisor(Process target, IntPtr window, string iconPath,
         EventWaitHandle activation, IntPtr desktop, Action requestApplicationWindow) {
         IntPtr big = LoadImage(IntPtr.Zero, iconPath, IMAGE_ICON, 32, 32, LR_LOADFROMFILE);
@@ -300,37 +264,29 @@ public class ChatGPT2Launcher {
         try {
             if (big == IntPtr.Zero || small == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot load the C2 icon.");
             ApplyWindowProperties(window, big, small, iconPath);
-            ActivateHwnd(window);
             // A hidden, closed-to-tray or recreated window is not process termination.
             // Only the application's actual exit ends this supervisor.
             bool waitingForWindow = false;
-            IntPtr lastWindow = window;
             var styled = new HashSet<IntPtr> { window };
             int cycle = 0;
             while (!target.HasExited) {
                 bool activate = activation.WaitOne(500);
+                if (activate && !target.HasExited) {
+                    // Visibility of the HWND does not imply visibility of the
+                    // app's WebContents. Only Codex can restore both together.
+                    requestApplicationWindow();
+                    Log("C2 activation forwarded to the application.");
+                }
                 var windows = FindVisibleWindowsForProcess(target.Id, desktop);
                 if (windows.Count == 0) {
                     if (!waitingForWindow) {
                         Log("C2 has no visible main window; leaving the application running.");
                         waitingForWindow = true;
                     }
-                    if (activate && !target.HasExited) {
-                        uint ownerPid;
-                        if (GetWindowThreadProcessId(lastWindow, out ownerPid) != 0 && ownerPid == (uint)target.Id) {
-                            ActivateHwnd(lastWindow);
-                        } else {
-                            // The old HWND was destroyed. Let the app's single-instance
-                            // handler create its own main window; never show prewarm windows.
-                            requestApplicationWindow();
-                            Log("C2 window recreation requested through the application.");
-                        }
-                    }
                     continue;
                 }
                 if (waitingForWindow) Log("C2 main window is visible again.");
                 waitingForWindow = false;
-                lastWindow = windows[0];
                 foreach (IntPtr hwnd in windows) {
                     UIntPtr current;
                     IntPtr result = SendMessageTimeout(hwnd, WM_GETICON, (UIntPtr)ICON_SMALL, IntPtr.Zero, SMTO_ABORTIFHUNG, 500, out current);
@@ -344,7 +300,6 @@ public class ChatGPT2Launcher {
                         if (title.ToString() != "ChatGPT 2") SetWindowText(hwnd, "ChatGPT 2");
                     }
                 }
-                if (activate) ActivateHwnd(windows[0]);
                 cycle++;
             }
             Log("C2 application exited.");
@@ -372,7 +327,7 @@ public class ChatGPT2Launcher {
             SendMessageTimeout(window, WM_SETICON, (UIntPtr)ICON_BIG, big, SMTO_ABORTIFHUNG, 1000, out ignored);
             SendMessageTimeout(window, WM_SETICON, (UIntPtr)ICON_SMALL, small, SMTO_ABORTIFHUNG, 1000, out ignored);
             SetWindowText(window, "ChatGPT 2");
-            SetWindowPos(window, IntPtr.Zero, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+            SetWindowPos(window, IntPtr.Zero, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
             Log(string.Format("C2 icon and grouping applied (HWND: 0x{0:X}).", window.ToInt64()));
         } catch (COMException ex) {
             Log("Window property update failed: " + ex.Message);

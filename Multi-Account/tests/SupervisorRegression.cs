@@ -19,10 +19,12 @@ public static class SupervisorRegression {
         string prefix = @"Local\CodexC2WindowTest-" + Path.GetFileName(home);
         using (var ready = new EventWaitHandle(false, EventResetMode.ManualReset, prefix + "-Ready"))
         using (var hide = new EventWaitHandle(false, EventResetMode.AutoReset, prefix + "-Hide"))
+        using (var restore = new EventWaitHandle(false, EventResetMode.AutoReset, prefix + "-Restore"))
+        using (var contentVisible = new EventWaitHandle(false, EventResetMode.ManualReset, prefix + "-ContentVisible"))
         using (var recreate = new EventWaitHandle(false, EventResetMode.AutoReset, prefix + "-Recreate"))
         using (var quit = new EventWaitHandle(false, EventResetMode.AutoReset, prefix + "-Quit"))
         using (var activate = new EventWaitHandle(false, EventResetMode.AutoReset))
-        using (var target = C2Process.Start(args[0], home, Path.GetDirectoryName(args[0]), 19824)) {
+        using (var target = StartFixture(args[0], home)) {
             IntPtr desktop = ChatGPT2Launcher.OpenDesktop("Default", 0, false, ChatGPT2Launcher.DESKTOP_ACCESS);
             Exception failure = null;
             int activationRequests = 0;
@@ -42,7 +44,7 @@ public static class SupervisorRegression {
                 if (window == IntPtr.Zero) throw new Exception("Test window was not found.");
                 supervisor = new Thread(() => {
                     try { ChatGPT2Launcher.RunSupervisor(target, window, args[1], activate, desktop,
-                        () => Interlocked.Increment(ref activationRequests)); }
+                        () => { Interlocked.Increment(ref activationRequests); restore.Set(); }); }
                     catch (Exception ex) { failure = ex; }
                 });
                 supervisor.IsBackground = true;
@@ -56,17 +58,23 @@ public static class SupervisorRegression {
                 if (target.HasExited) throw new Exception("REGRESSION: supervisor terminated the application after its window was hidden.");
                 if (failure != null) throw failure;
                 Console.WriteLine("PASS process survives a hidden window beyond the old two-second deadline.");
+                // Reproduce the old split state without activating a test window:
+                // the OS frame is shown, but the application's content stays hidden.
+                ChatGPT2Launcher.ShowWindow(window, 4); // SW_SHOWNOACTIVATE
+                if (!ChatGPT2Launcher.IsWindowVisible(window) || contentVisible.WaitOne(0))
+                    throw new Exception("Could not reproduce a visible frame with hidden application content.");
                 activate.Set();
                 Thread.Sleep(1000);
-                if (!ChatGPT2Launcher.IsWindowVisible(window)) throw new Exception("Activation did not restore the hidden window.");
-                Console.WriteLine("PASS activation restores the existing hidden window.");
+                if (!ChatGPT2Launcher.IsWindowVisible(window) || !contentVisible.WaitOne(0) || Volatile.Read(ref activationRequests) != 1)
+                    throw new Exception("Activation did not ask the application to restore its hidden content.");
+                Console.WriteLine("PASS visible frame with hidden content is restored through the application.");
                 recreate.Set();
                 Thread.Sleep(4000);
                 if (target.HasExited) throw new Exception("REGRESSION: supervisor terminated the application while its window was being recreated.");
                 activate.Set();
                 var requestWait = Stopwatch.StartNew();
-                while (Volatile.Read(ref activationRequests) == 0 && requestWait.ElapsedMilliseconds < 1500) Thread.Sleep(20);
-                if (Volatile.Read(ref activationRequests) != 1) throw new Exception("Destroyed-window activation was not forwarded to the application.");
+                while (Volatile.Read(ref activationRequests) < 2 && requestWait.ElapsedMilliseconds < 1500) Thread.Sleep(20);
+                if (Volatile.Read(ref activationRequests) != 2) throw new Exception("Destroyed-window activation was not forwarded to the application.");
                 Console.WriteLine("PASS activation of a destroyed window is forwarded to the application.");
                 if (!ready.WaitOne(5000)) throw new Exception("Replacement window did not become ready.");
                 Thread.Sleep(700);
@@ -88,5 +96,13 @@ public static class SupervisorRegression {
                 ChatGPT2Launcher.CloseDesktop(desktop);
             }
         }
+    }
+
+    private static Process StartFixture(string executable, string home) {
+        // No STARTF_USESHOWWINDOW override: the fixture's ShowWithoutActivation
+        // must stay effective while the user works in another application.
+        var start = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true };
+        start.EnvironmentVariables["CODEX_HOME"] = home;
+        return Process.Start(start);
     }
 }
