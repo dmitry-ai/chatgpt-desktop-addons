@@ -1,3 +1,4 @@
+param([switch]$AllowAppActivation)
 $ErrorActionPreference = 'Stop'
 $temporaryParent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
 $testName = 'CodexUIRecovery-' + [Guid]::NewGuid().ToString('N')
@@ -10,7 +11,9 @@ try {
         /reference:System.Xml.Linq.dll /reference:System.Management.dll /reference:System.Windows.Forms.dll /reference:System.Drawing.dll `
         "/out:$program" $packageSource (Join-Path $PSScriptRoot 'C1Runtime.cs') (Join-Path $PSScriptRoot 'RecoveryNativeTests.cs')
     if ($LASTEXITCODE -ne 0) { throw 'Native recovery test compilation failed.' }
-    & $program
+    $testArguments = @()
+    if ($AllowAppActivation) { $testArguments += '--allow-app-activation' }
+    & $program @testArguments
     if ($LASTEXITCODE -ne 0) { throw 'Native recovery tests failed.' }
 } finally {
     $resolvedTestRoot = [IO.Path]::GetFullPath($testRoot)

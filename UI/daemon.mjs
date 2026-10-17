@@ -88,11 +88,13 @@ async function scan(){
     }catch{} // Closed accounts reconnect automatically.
   }));
   const c1=[...clients.values()].some(c=>c.profile.id==='C1'&&c.installed&&!c.cdp.closed);
+  const c1Verified=[...clients.values()].some(c=>c.profile.id==='C1'&&c.installed&&c.sharedReady&&!c.cdp.closed);
+  await recovery?.updates.tick(Date.now(),c1Verified);
   if(c1){
     if(recovery&&recovery.status.state!=='connected'){
       await log('C1 UI recovery verified: Folders/CSS installed');recovery.connected();
     }
-  }else await recovery?.tick();
+  }else if(!recovery?.updates.handling)await recovery?.tick();
   if(!stopping)scanTimer=setTimeout(scan,2000);
 }
 async function shutdown(){
@@ -109,7 +111,7 @@ const server=net.createServer(socket=>{
     try{
       const request=JSON.parse(buffer.slice(0,end));buffer='';let result;
       switch(request.command){
-        case 'status':result={pid:process.pid,ready:!!shared,error:startupError,recovery:recovery?.status,shared:{file:catalogFile,revision:catalog.state?.revision,projects:Object.values(catalog.state?.projects??{}).filter(p=>!p.deleted).length,folders:catalog.state?.folders.length,conflicts:catalog.state?.conflicts,accounts:shared?.status()},profiles:profiles.map(p=>({id:p.id,file:catalogFile,revision:catalog.state?.revision})),clients:[...clients.values()].map(c=>({profile:c.profile.id,id:c.id,installed:c.installed,sharedReady:!!c.sharedReady,appVersion:c.sharedInfo?.appVersion}))};break;
+        case 'status':result={pid:process.pid,ready:!!shared,error:startupError,recovery:recovery?.status,update:recovery?.updates.status,shared:{file:catalogFile,revision:catalog.state?.revision,projects:Object.values(catalog.state?.projects??{}).filter(p=>!p.deleted).length,folders:catalog.state?.folders.length,conflicts:catalog.state?.conflicts,accounts:shared?.status()},profiles:profiles.map(p=>({id:p.id,file:catalogFile,revision:catalog.state?.revision})),clients:[...clients.values()].map(c=>({profile:c.profile.id,id:c.id,installed:c.installed,sharedReady:!!c.sharedReady,appVersion:c.sharedInfo?.appVersion}))};break;
         case 'state':result=state(request.profile??'C1');break;
         case 'operation':{const profile=profiles.find(p=>p.id===request.profile);if(!profile)throw Error('Неизвестный профиль');result=await operate(profile,request.operation);break;}
         case 'shared-catalog':result=catalog.state;break;

@@ -18,8 +18,10 @@ export class ProjectSynchronizer{
       this.health.set(client.profile.id,{state:'connected',appVersion:info.appVersion});
       await this.log('Shared projects connected '+client.profile.id+' '+info.appVersion+' '+info.exportName);
     }catch(error){
-      client.sharedReady=false;client.sharedRetryAt=Date.now()+30000;
-      await this.report(client.profile.id,error,'unsupported');
+      const starting=String(error?.message??error).includes('DESKTOP_STARTING:');
+      client.sharedReady=false;client.sharedRetryAt=Date.now()+(starting?1000:30000);
+      if(starting)this.health.set(client.profile.id,{state:'initializing'});
+      else await this.report(client.profile.id,error,'unsupported');
     }finally{client.sharedConnecting=false;}
   }
   status(){return Object.fromEntries(this.profiles.map(p=>[p.id,{...this.health.get(p.id),pending:pendingCount(this.store.state,p.id)}]));}

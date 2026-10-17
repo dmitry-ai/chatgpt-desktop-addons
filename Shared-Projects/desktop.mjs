@@ -111,10 +111,10 @@ async function connectDesktop(findExport, findHost, makeLedger,findBus,requestCo
   }
   const name = findExport(source);
   const module = await import(url);
-  window.__codexSharedDesktop?.dispose?.();
-  const projects = module[name]();
   const binding = findHost(source);
   const host = (await import(new URL(binding.url,url).href))[binding.name];
+  if (!host?.projects) throw Error('DESKTOP_STARTING: сервис проектов ещё инициализируется');
+  const projects = module[name]();
   const busBinding=findBus(source);
   const bus=(await import(new URL(busBinding.url,url).href))[busBinding.name];
   if(typeof bus?.subscribe!=='function'||typeof bus?.dispatchMessage!=='function')throw Error('Desktop config connection is unavailable');
@@ -152,8 +152,9 @@ async function connectDesktop(findExport, findHost, makeLedger,findBus,requestCo
     });
     return wrappers.get(key);
   }});
-  host.projects = proxy;
   const snapshot = clean(await read());
+  window.__codexSharedDesktop?.dispose?.();
+  host.projects = proxy;
   const info = {url, exportName:name, appVersion:window.electronBridge?.getSentryInitOptions?.().appVersion ?? null};
   const api = window.__codexSharedDesktop = {
     version:7, info, read:async()=>clean(await read()),

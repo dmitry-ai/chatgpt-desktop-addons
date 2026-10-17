@@ -88,6 +88,106 @@ export class C1Recovery {
   }
 }
 
+// The app writes this marker only while preparing a user-requested update.
+// Keep lifecycle metadata; never retain or copy other desktop-log content.
+export class UpdateIntentLog {
+  constructor(root){this.root=root;this.seen=new Map();this.intent=null;}
+  async read(process,now=Date.now()){
+    for(const time of [now,now-86400000]){
+      const date=new Date(time).toISOString().slice(0,10).split('-');
+      const directory=path.join(this.root,...date);
+      let names;try{names=await fs.readdir(directory);}catch(error){if(error.code==='ENOENT')continue;throw error;}
+      const pattern=new RegExp('^codex-desktop-[a-f0-9-]{36}-'+process.Pid+'-t0-.*\\.log$');
+      for(const name of names.filter(name=>pattern.test(name))){
+        const file=path.join(directory,name),stat=await fs.stat(file);
+        let offset=this.seen.get(file)??Math.max(0,stat.size-65536);
+        if(offset>stat.size)offset=0;
+        if(offset===stat.size)continue;
+        const chunks=[];for await(const chunk of createReadStream(file,{start:offset,end:stat.size-1}))chunks.push(chunk);
+        const bytes=Buffer.concat(chunks);
+        // Leave an incomplete record for the next read rather than accepting it.
+        const end=bytes.lastIndexOf(10);if(end<0)continue;
+        this.seen.set(file,offset+end+1);
+        for(const line of bytes.subarray(0,end).toString('utf8').split('\n')){
+          const match=/^(\S+) info update_resume_state_saved threadCount=\d+\s*$/.exec(line);
+          const at=match?Date.parse(match[1]):NaN;
+          if(at>=Date.parse(process.StartedAt)&&at<=now&&now-at<=120000)this.intent={at,pid:process.Pid,startTicks:process.StartTicks};
+        }
+      }
+    }
+    return this.intent?.pid===process.Pid&&this.intent.startTicks===process.StartTicks&&now-this.intent.at<=120000?this.intent:null;
+  }
+}
+
+export class UpdateRecovery {
+  constructor({probe,prepare,launch,recover,activity,intent,log=async()=>{}}){
+    Object.assign(this,{probe,prepare,launch,recover,activity,intent,log});
+    this.status={state:'watching'};this.nextProbe=0;this.handled=new Set();
+  }
+  async tick(now=Date.now(),uiReady=false){
+    if(this.stopped||now<this.nextProbe)return;
+    this.nextProbe=now+2000;
+    try{
+      const current=await this.probe();if(this.stopped)return;
+      if(this.failed){
+        if(uiReady){this.failed=false;this.pending=null;this.previous=current;this.status={state:'watching',lastError:this.status.error};}
+        return;
+      }
+      // Inspect the previous process's final records even after it has exited.
+      if(!this.pending&&this.previous){
+        const intent=await this.intent(this.previous,now);
+        if(intent&&!this.handled.has(intent.at)){
+          this.pending={origin:this.previous,intent,deadline:intent.at+120000};
+          this.handled.add(intent.at);await this.log('User-requested C1 update observed, PID '+this.previous.Pid);
+        }
+      }
+      if(!this.pending){this.previous=current;return;}
+      const task=this.pending;
+      if(now>task.deadline)throw Error('Update did not reach a verified C1 UI within two minutes');
+      if(current?.Pid===task.origin.Pid&&current.StartTicks===task.origin.StartTicks){
+        this.status={state:'waiting-for-updater-exit',pid:current.Pid};return;
+      }
+      if(current){
+        const version=value=>{
+          const match=/^OpenAI\.Codex_(\d+)\.(\d+)\.(\d+)\.(\d+)_/.exec(value??'');
+          if(!match)throw Error('Unknown running package identity');return match.slice(1).map(Number);
+        };
+        const before=version(task.origin.Package),after=version(current.Package);
+        const difference=after.map((n,i)=>n-before[i]).find(n=>n!==0)??0;
+        if(difference<=0)throw Error('The updater reopened an older or unchanged package; automatic recovery stopped');
+        if(current.HasDebugPort){
+          if(uiReady){this.status={state:'verified',pid:current.Pid,package:current.Package};this.previous=current;this.pending=null;await this.log('Updated C1 verified: new package and Folders/CSS connected');}
+          else this.status={state:'waiting-for-ui',pid:current.Pid};
+          return;
+        }
+        // Only a newborn, post-update instance may be corrected automatically.
+        // A long-running session remains under the user's control.
+        if(now-Date.parse(current.StartedAt)>20000)throw Error('C1 is already in use; reopen its shortcut when convenient');
+        if(task.restarted)throw Error('The replacement C1 still has no UI launch flag');
+        if(!current.RestartRegistered)throw Error('Updated C1 does not support graceful Windows restart');
+        // Include answers resumed from before the updater closed the old app.
+        const state=await this.activity(task.origin.StartedAt,now);
+        if(this.stopped)return;
+        if(state.active||!state.quiet){this.status={state:'waiting-for-turns',pid:current.Pid};return;}
+        const confirmed=await this.activity(task.origin.StartedAt,Date.now());
+        if(this.stopped||confirmed.active||!confirmed.quiet)return;
+        task.restarted=true;await this.recover(current);
+        this.status={state:'waiting-for-ui'};return;
+      }
+      this.status={state:'registering'};
+      const prepared=await this.prepare(task.origin);if(this.stopped)return;
+      if(!prepared.Ready){this.status={state:'waiting-for-other-apps',package:prepared.PendingPackage};return;}
+      if(!prepared.Newer)throw Error('Windows has not registered a newer package; the previous version was not relaunched');
+      if(task.launched)throw Error('The updated C1 exited before UI verification; automatic launch will not repeat');
+      task.launched=true;
+      const pid=await this.launch();this.status={state:'waiting-for-ui',pid};
+    }catch(error){
+      this.failed=true;this.status={state:'error',error:error.message};await this.log('C1 update recovery stopped: '+error.message);
+    }
+  }
+  get handling(){return !!this.pending&&!this.failed;}
+}
+
 // One private stdio worker; no new listener, scheduled task, registry entry or
 // on-disk build is needed. The C# package resolver is shared with the C2 launcher.
 class NativeRuntime {
@@ -126,6 +226,15 @@ export function createC1Recovery(home,log){
     recover:process=>runtime.call({command:'recover',pid:process.Pid,startTicks:process.StartTicks}),
     activity:(startedAt,now)=>activity.read(startedAt,now),log,
   });
-  recovery.stop=()=>{recovery.stopped=true;runtime.close();};
+  const intents=new UpdateIntentLog(path.join(process.env.LOCALAPPDATA,'Codex','Logs'));
+  const updates=new UpdateRecovery({
+    probe:()=>runtime.call({command:'probe'}),
+    prepare:origin=>runtime.call({command:'prepare-update',originPackage:origin.Package}),
+    launch:()=>runtime.call({command:'launch'}),
+    recover:process=>runtime.call({command:'recover',pid:process.Pid,startTicks:process.StartTicks}),
+    activity:(startedAt,now)=>activity.read(startedAt,now),intent:(process,now)=>intents.read(process,now),log,
+  });
+  recovery.updates=updates;
+  recovery.stop=()=>{recovery.stopped=true;updates.stopped=true;runtime.close();};
   return recovery;
 }

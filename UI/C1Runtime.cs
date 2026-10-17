@@ -71,6 +71,62 @@ public sealed class C1ProcessInfo {
 }
 
 public static class C1Runtime {
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct StartupInfo {
+        public int Size; public string Reserved, Desktop, Title;
+        public int X, Y, Width, Height, XChars, YChars, Fill, Flags;
+        public short Show, ReservedBytes;
+        public IntPtr ReservedPointer, Input, Output, Error;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ProcessInfo { public IntPtr Process, Thread; public int Pid, ThreadId; }
+    [DllImport("kernel32.dll", EntryPoint = "CreateProcessW", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool CreateProcess(string executable, StringBuilder command, IntPtr processAttributes,
+        IntPtr threadAttributes, bool inherit, uint flags, IntPtr environment, string directory,
+        ref StartupInfo startup, out ProcessInfo process);
+    [DllImport("kernel32.dll")]
+    private static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetPackageFullName(IntPtr process, ref uint length, StringBuilder name);
+
+    internal static Process StartProcess(string executable, int port) {
+        // A direct launch preserves the argument even when package activation
+        // during a pending update would otherwise reopen C1 with empty arguments.
+        var startup = new StartupInfo { Size = Marshal.SizeOf(typeof(StartupInfo)),
+            Desktop = @"WinSta0\Default", Flags = 1, Show = 1 };
+        ProcessInfo info;
+        if (!CreateProcess(executable, new StringBuilder("\"" + executable + "\" --remote-debugging-port=" + port),
+            IntPtr.Zero, IntPtr.Zero, false, 0x08000400, IntPtr.Zero, Path.GetDirectoryName(executable), ref startup, out info))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot launch C1 with its UI connection.");
+        try {
+            var process = Process.GetProcessById(info.Pid);
+            try { IntPtr pinned = process.Handle; return process; }
+            catch { process.Dispose(); throw; }
+        } finally { CloseHandle(info.Thread); CloseHandle(info.Process); }
+    }
+    public static int Launch(bool activateExisting) {
+        CodexPackage package = CodexPackage.Resolve(null);
+        using (Process existing = Find(package)) {
+            if (existing != null) {
+                if (!HasPort(existing.Id)) throw new InvalidOperationException(
+                    "C1 is already open without its UI connection. Fully exit C1 once, then open the C1 shortcut.");
+                return activateExisting ? Activate() : existing.Id;
+            }
+        }
+        using (Process process = StartProcess(package.Executable, 9223)) {
+            if (!CodexPackage.Owns(process)) throw new InvalidOperationException("The C1 process has an unexpected package identity.");
+            return process.Id;
+        }
+    }
+    public static int[] PackageProcesses() {
+        var result = new System.Collections.Generic.List<int>();
+        foreach (Process process in Process.GetProcesses()) using (process) {
+            try { if (!process.HasExited && CodexPackage.Owns(process)) result.Add(process.Id); }
+            catch (Win32Exception) { } // Other users' protected system processes.
+            catch (InvalidOperationException) { } // Exited during the snapshot.
+        }
+        return result.ToArray();
+    }
     private static string FirstArgument(string command) {
         command = (command ?? "").TrimStart();
         if (command.StartsWith("\"")) {
@@ -120,8 +176,12 @@ public static class C1Runtime {
         using (Process process = Find(package)) {
             if (process == null) return null;
             DateTime started = process.StartTime.ToUniversalTime();
+            uint length = 512;
+            var identity = new StringBuilder((int)length);
+            int identityResult = GetPackageFullName(process.Handle, ref length, identity);
+            if (identityResult != 0) throw new Win32Exception(identityResult, "Cannot read C1's running package identity.");
             return new C1ProcessInfo { Pid = process.Id, StartTicks = started.Ticks.ToString(), StartedAt = started.ToString("o"),
-                Package = package.FullName, HasDebugPort = HasPort(process.Id), RestartRegistered = WindowsRestart.IsRegistered(process) };
+                Package = identity.ToString(), HasDebugPort = HasPort(process.Id), RestartRegistered = WindowsRestart.IsRegistered(process) };
         }
     }
     public static int Recover(int expectedPid, string expectedStartTicks) {
@@ -131,7 +191,7 @@ public static class C1Runtime {
             if (HasPort(process.Id)) throw new InvalidOperationException("C1 already has its UI port; no restart is needed.");
             WindowsRestart.Shutdown(process);
         }
-        return Activate();
+        return Launch(false);
     }
     public static int Activate() {
         var manager = (IApplicationActivationManager)new ApplicationActivationManager();

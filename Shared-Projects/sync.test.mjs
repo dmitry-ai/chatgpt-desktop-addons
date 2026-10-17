@@ -4,6 +4,20 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import vm from 'node:vm';
 import {CatalogStore,migrateSeeds,stateDirectory,ensureProject,selectRegistrationSources} from './catalog.mjs';
+
+test('desktop initialization is retried promptly without declaring its project service unsupported',async()=>{
+  let ready=false,calls=0;
+  const client={profile:{id:'C2'},cdp:{closed:false,evaluate:async()=>{
+    calls++;if(!ready)throw Error('DESKTOP_STARTING: project service is initializing');
+    return {appVersion:'new',url:'app://-/assets/app-initial-new.js',exportName:'projects'};
+  }}};
+  const synchronizer=new ProjectSynchronizer({store:{},profiles:[client.profile],getClients:()=>[client],notify:async()=>{},log:async()=>{}});
+  const started=Date.now();await synchronizer.attach(client);
+  assert.equal(client.sharedReady,false);assert.equal(synchronizer.health.get('C2').state,'initializing');
+  assert.ok(client.sharedRetryAt-started<2000);
+  ready=true;client.sharedRetryAt=0;await synchronizer.attach(client);
+  assert.equal(client.sharedReady,true);assert.equal(calls,2);assert.equal(synchronizer.health.get('C2').state,'connected');
+});
 import {TrustPolicy} from './trust.mjs';
 import {ProjectSynchronizer} from './sync.mjs';
 

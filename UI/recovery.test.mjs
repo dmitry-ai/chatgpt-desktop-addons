@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {TurnLog,C1Recovery} from './recovery.mjs';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import {TurnLog,C1Recovery,UpdateRecovery,UpdateIntentLog} from './recovery.mjs';
 
 const since=Date.parse('2026-10-16T17:00:00Z');
 const row=(type,id,time=since+1000)=>JSON.stringify({timestamp:new Date(time).toISOString(),type:'event_msg',payload:{type,turn_id:id}})+'\n';
@@ -71,4 +74,91 @@ test('background recovery leaves a running C1 without the launch flag for manual
   const recovery=new C1Recovery({probe:async()=>processInfo,activity:async()=>{throw Error('Must not inspect sessions');},recover:async()=>calls++});
   await recovery.tick(since);await recovery.tick(since+100000);
   assert.equal(calls,0);assert.equal(recovery.status.state,'waiting-for-manual-launch');
+});
+
+const oldPackage='OpenAI.Codex_1.0.0.0_x64__2p2nqsd0c76g0';
+const newPackage='OpenAI.Codex_2.0.0.0_x64__2p2nqsd0c76g0';
+function updateFixture(){
+  const origin={...processInfo,Package:oldPackage,HasDebugPort:true};
+  const calls=[],activityStarts=[];let current=origin,marker=null,prepared={Ready:true,Newer:true},active=0;
+  const update=new UpdateRecovery({probe:async()=>current,intent:async()=>marker,
+    prepare:async value=>{calls.push(['prepare',value.Pid]);return prepared;},
+    launch:async()=>{calls.push(['launch']);return 124;},
+    recover:async value=>{calls.push(['recover',value.Pid]);},
+    activity:async started=>{activityStarts.push(started);return {active,quiet:true};}});
+  return {origin,update,calls,activityStarts,setCurrent:p=>current=p,setMarker:m=>marker=m,setPrepared:p=>prepared=p,setActive:a=>active=a};
+}
+test('ordinary quit, stale update and a new manual session never cause an automatic relaunch',async()=>{
+  const f=updateFixture();await f.update.tick(since,true);
+  f.setCurrent(null);await f.update.tick(since+3000);assert.deepEqual(f.calls,[]);
+  const g=updateFixture();g.setCurrent({...g.origin,HasDebugPort:false});await g.update.tick(since+3000,false);
+  assert.deepEqual(g.calls,[]);assert.equal(g.update.status.state,'watching');
+});
+test('failed in-app restart is completed outside the app, then waits for actual Folders/UI verification',async()=>{
+  const f=updateFixture();await f.update.tick(since,true);
+  f.setMarker({at:since+1000});f.setCurrent(null);await f.update.tick(since+3000);
+  assert.deepEqual(f.calls,[['prepare',123],['launch']]);
+  assert.equal(f.update.status.state,'waiting-for-ui');
+  f.setCurrent({...f.origin,Pid:124,StartTicks:'new',Package:newPackage});
+  await f.update.tick(since+6000,false);assert.equal(f.update.status.state,'waiting-for-ui');
+  await f.update.tick(since+9000,true);assert.equal(f.update.status.state,'verified');
+  assert.equal(f.update.pending,null);
+  await f.update.tick(since+12000,true);assert.equal(f.calls.filter(c=>c[0]==='launch').length,1);
+});
+test('registration waits for another profile and never launches the previous package',async()=>{
+  const f=updateFixture();await f.update.tick(since,true);f.setMarker({at:since+1000});f.setCurrent(null);
+  f.setPrepared({Ready:false,PendingPackage:newPackage});await f.update.tick(since+3000);
+  assert.equal(f.update.status.state,'waiting-for-other-apps');assert.equal(f.calls.length,1);
+  f.setPrepared({Ready:true,Newer:false});await f.update.tick(since+6000);
+  assert.equal(f.update.status.state,'error');assert.equal(f.calls.filter(c=>c[0]==='launch').length,0);
+});
+test('only an idle newborn instance after an observed update may recover a lost launch flag',async()=>{
+  const f=updateFixture();await f.update.tick(since,true);f.setMarker({at:since+1000});
+  const replacement={...f.origin,Pid:124,StartTicks:'new',StartedAt:new Date(since+2000).toISOString(),Package:newPackage,HasDebugPort:false};
+  f.setCurrent(replacement);f.setActive(1);await f.update.tick(since+4000);
+  assert.equal(f.calls.length,0);assert.equal(f.update.status.state,'waiting-for-turns');
+  f.setActive(0);await f.update.tick(since+7000);assert.deepEqual(f.calls,[['recover',124]]);
+  assert.ok(f.activityStarts.every(started=>started===f.origin.StartedAt),'Answers resumed from the original app must be included');
+  await f.update.tick(since+10000);assert.equal(f.update.status.state,'error');assert.equal(f.calls.length,1);
+});
+test('a post-update C1 already in use is left open',async()=>{
+  const f=updateFixture();await f.update.tick(since,true);f.setMarker({at:since+1000});
+  f.setCurrent({...f.origin,Pid:124,StartTicks:'new',StartedAt:new Date(since+2000).toISOString(),Package:newPackage,HasDebugPort:false});
+  await f.update.tick(since+25000);assert.equal(f.update.status.state,'error');assert.deepEqual(f.calls,[]);
+});
+test('helper stop during registration cannot start an application afterwards',async()=>{
+  const f=updateFixture();await f.update.tick(since,true);f.setMarker({at:since+1000});f.setCurrent(null);
+  f.update.prepare=async()=>{f.update.stopped=true;return {Ready:true,Newer:true};};
+  await f.update.tick(since+3000);assert.deepEqual(f.calls,[]);
+});
+test('an updated process that exits is not relaunched in a loop',async()=>{
+  const f=updateFixture();await f.update.tick(since,true);f.setMarker({at:since+1000});f.setCurrent(null);
+  await f.update.tick(since+3000);await f.update.tick(since+6000);await f.update.tick(since+9000);
+  assert.equal(f.calls.filter(c=>c[0]==='launch').length,1);assert.equal(f.update.status.state,'error');
+});
+test('a failed attempt stays blocked until a verified session, then a later update can be handled',async()=>{
+  const f=updateFixture();await f.update.tick(since,true);f.setMarker({at:since+1000});f.setCurrent(null);
+  f.setPrepared({Ready:true,Newer:false});await f.update.tick(since+3000);assert.equal(f.update.failed,true);
+  await f.update.tick(since+6000);assert.equal(f.calls.length,1);
+  const next={...f.origin,Pid:124,StartTicks:'new',Package:newPackage};f.setCurrent(next);
+  await f.update.tick(since+9000,true);assert.equal(f.update.failed,false);
+  f.setMarker({at:since+10000});f.setCurrent(null);f.setPrepared({Ready:true,Newer:true});
+  await f.update.tick(since+12000);assert.deepEqual(f.calls.at(-1),['launch']);
+});
+test('update intent accepts only a complete native marker for the observed process lifetime',async()=>{
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'CodexUIIntentTest-'));
+  try{
+    const directory=path.join(root,'2026','10','16');await fs.mkdir(directory,{recursive:true});
+    const file=path.join(directory,'codex-desktop-00000000-0000-0000-0000-000000000000-123-t0-i1-170000-0.log');
+    const marker=new Date(since+1000).toISOString()+' info update_resume_state_saved threadCount=0';
+    await fs.writeFile(file,'посторонняя строка\n'+marker);
+    const log=new UpdateIntentLog(root);assert.equal(await log.read(processInfo,since+3000),null);
+    await fs.appendFile(file,'\n');assert.equal((await log.read(processInfo,since+4000)).at,since+1000);
+    assert.equal(await log.read({...processInfo,StartTicks:'reused',StartedAt:new Date(since+2000).toISOString()},since+5000),null);
+    assert.equal(await log.read(processInfo,since+130000),null);
+  }finally{
+    const resolved=path.resolve(root);
+    if(path.dirname(resolved)!==path.resolve(os.tmpdir())||!path.basename(resolved).startsWith('CodexUIIntentTest-'))throw Error('Unexpected test cleanup path');
+    await fs.rm(resolved,{recursive:true,force:true});
+  }
 });
