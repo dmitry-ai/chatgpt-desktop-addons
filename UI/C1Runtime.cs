@@ -71,8 +71,37 @@ public sealed class C1ProcessInfo {
 }
 
 public static class C1Runtime {
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct StartupInfo {
+        public int cb;
+        public string reserved, desktop, title;
+        public int x, y, xSize, ySize, xChars, yChars, fill, flags;
+        public short show, reservedBytes;
+        public IntPtr reservedPointer, input, output, error;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ProcessStartup {
+        public IntPtr process, thread;
+        public int pid, threadId;
+    }
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetPackageFullName(IntPtr process, ref uint length, StringBuilder name);
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetThreadDesktop(uint threadId);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool GetUserObjectInformation(IntPtr obj, int index, StringBuilder info, int length, out int needed);
+    [DllImport("kernel32.dll", EntryPoint = "CreateProcessW", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool CreateProcess(string executable, StringBuilder command, IntPtr processAttributes,
+        IntPtr threadAttributes, bool inherit, uint flags, IntPtr environment, string directory,
+        ref StartupInfo startup, out ProcessStartup process);
+    [DllImport("kernel32.dll")]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+    [DllImport("kernel32.dll")]
+    private static extern bool CloseHandle(IntPtr handle);
 
     public static int Launch(bool activateExisting) {
         CodexPackage package = CodexPackage.Resolve(null);
@@ -129,10 +158,18 @@ public static class C1Runtime {
                         candidate = Process.GetProcessById(Convert.ToInt32(item["ProcessId"]));
                         IntPtr pinned = candidate.Handle;
                         if (candidate.HasExited || !CodexPackage.Owns(candidate)) continue;
-                        if (found != null) throw new InvalidOperationException("More than one canonical C1 process is running.");
-                        found = candidate; candidate = null;
-                    } catch (ArgumentException) { } // Exited between the snapshot and opening its handle.
-                    finally { if (candidate != null) candidate.Dispose(); }
+                        // Warm package activation briefly spawns a second process that
+                        // forwards focus to the primary instance and exits; keep the older owner.
+                        if (found == null) { found = candidate; candidate = null; }
+                        else if (candidate.StartTime.ToUniversalTime() < found.StartTime.ToUniversalTime()) {
+                            found.Dispose(); found = candidate; candidate = null;
+                        }
+                    } catch (ArgumentException) {
+                    } catch (InvalidOperationException) {
+                        if (candidate == null || !candidate.HasExited) throw;
+                    } catch (Win32Exception) {
+                        if (candidate == null || !candidate.HasExited) throw;
+                    } finally { if (candidate != null) candidate.Dispose(); }
                 }
             }
             return found;
@@ -167,14 +204,45 @@ public static class C1Runtime {
         }
         return Launch(false);
     }
+    private static bool IsDefaultDesktop() {
+        IntPtr desktop = GetThreadDesktop(GetCurrentThreadId());
+        int needed;
+        var name = new StringBuilder(128);
+        return desktop != IntPtr.Zero && GetUserObjectInformation(desktop, 2, name, name.Capacity * 2, out needed) &&
+            string.Equals(name.ToString(), "Default", StringComparison.OrdinalIgnoreCase);
+    }
     public static int Activate() {
+        string appId = CodexPackage.Resolve(null).AppUserModelId;
+        if (!IsDefaultDesktop()) return ActivateOnDefaultDesktop(appId);
         var manager = (IApplicationActivationManager)new ApplicationActivationManager();
         try {
             uint pid;
-            int result = manager.ActivateApplication(CodexPackage.Resolve(null).AppUserModelId, "--remote-debugging-port=9223", 2, out pid);
+            int result = manager.ActivateApplication(appId, "--remote-debugging-port=9223", 2, out pid);
             if (result < 0) Marshal.ThrowExceptionForHR(result);
             return checked((int)pid);
         } finally { Marshal.ReleaseComObject(manager); }
+    }
+    private static int ActivateOnDefaultDesktop(string appId) {
+        string ps = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), @"WindowsPowerShell\v1.0\powershell.exe");
+        string script = "Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;" +
+            "[ComImport,Guid(\"45BA127D-10A8-46EA-8AB7-56EA9078943C\")]class M{}" +
+            "[ComImport,Guid(\"2E941141-7F97-4756-BA1D-9DECDE894A3D\"),InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]" +
+            "interface I{[PreserveSig]int A([MarshalAs(UnmanagedType.LPWStr)]string a,[MarshalAs(UnmanagedType.LPWStr)]string b,uint c,out uint p);}" +
+            "public static class G{public static int R(string a){var m=(I)new M();try{uint p;int h=m.A(a,\"--remote-debugging-port=9223\",2,out p);" +
+            "if(h<0)Marshal.ThrowExceptionForHR(h);return checked((int)p);}finally{Marshal.ReleaseComObject(m);}}}';" +
+            "[Environment]::Exit([G]::R('" + appId.Replace("'", "''") + "'))";
+        string encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
+        var startup = new StartupInfo { cb = Marshal.SizeOf(typeof(StartupInfo)), desktop = @"WinSta0\Default", flags = 1, show = 0 };
+        var command = new StringBuilder("\"" + ps + "\" -NoLogo -NoProfile -NonInteractive -EncodedCommand " + encoded);
+        ProcessStartup info;
+        if (!CreateProcess(ps, command, IntPtr.Zero, IntPtr.Zero, false, 0x08000000, IntPtr.Zero, null, ref startup, out info))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot switch C1 activation to the interactive desktop.");
+        try {
+            if (WaitForSingleObject(info.process, 30000) != 0) throw new TimeoutException("C1 desktop activation timed out.");
+            uint code;
+            if (!GetExitCodeProcess(info.process, out code) || code <= 1) throw new InvalidOperationException("Cannot activate C1 on the interactive desktop.");
+            return checked((int)code);
+        } finally { CloseHandle(info.thread); CloseHandle(info.process); }
     }
     [ComImport, Guid("45BA127D-10A8-46EA-8AB7-56EA9078943C")]
     private class ApplicationActivationManager { }
