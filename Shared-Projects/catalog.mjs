@@ -140,7 +140,7 @@ export function observeProjects(state,profileId,snapshot,event=null){
     state.conflicts=state.conflicts.filter(c=>!(c.kind==='missing'&&c.projectId===shared.id&&c.profile===profileId));
   }
   for(const [id,b]of Object.entries(profile.bindings)){
-    if(!b.known||snapshot[b.desktopId]||state.projects[id].deleted||b.lastSeen===null)continue;
+    if(!b.known||snapshot[b.desktopId]||state.projects[id].deleted||state.projects[id].cleanupHold||b.lastSeen===null)continue;
     b.missing=true;
     conflict(state,{kind:'missing',projectId:id,profile:profileId,field:'presence',sharedValue:true,localValue:false});
   }
@@ -158,7 +158,7 @@ export function planOperation(state,profileId,snapshot){
   const started=state.operations.find(op=>op.profile===profileId&&op.startedAt);
   if(started)return clone(started);
   for(const id of state.projectOrder){
-    const p=state.projects[id],b=profile.bindings[id];if(!b||b.registrationBlock||state.conflicts.some(c=>c.projectId===id))continue;
+    const p=state.projects[id],b=profile.bindings[id];if(!b||p.cleanupHold||b.registrationBlock||state.conflicts.some(c=>c.projectId===id))continue;
     const actual=snapshot[b.desktopId];
     // A tool-created project first uses the originating profile's native Trust flow.
     // Other profiles wait for that actual registration before provenance-based restore.

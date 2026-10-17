@@ -114,7 +114,7 @@ const server=net.createServer(socket=>{
         case 'status':result={pid:process.pid,ready:!!shared,error:startupError,recovery:recovery?.status,update:recovery?.updates.status,shared:{file:catalogFile,revision:catalog.state?.revision,projects:Object.values(catalog.state?.projects??{}).filter(p=>!p.deleted).length,folders:catalog.state?.folders.length,conflicts:catalog.state?.conflicts,accounts:shared?.status()},profiles:profiles.map(p=>({id:p.id,file:catalogFile,revision:catalog.state?.revision})),clients:[...clients.values()].map(c=>({profile:c.profile.id,id:c.id,installed:c.installed,sharedReady:!!c.sharedReady,appVersion:c.sharedInfo?.appVersion}))};break;
         case 'state':result=state(request.profile??'C1');break;
         case 'operation':{const profile=profiles.find(p=>p.id===request.profile);if(!profile)throw Error('Неизвестный профиль');result=await operate(profile,request.operation);break;}
-        case 'shared-catalog':result=catalog.state;break;
+        case 'shared-catalog':if(!shared)throw Error(startupError??'Общий каталог ещё не готов');result=catalog.state;break;
         case 'shared-ensure-project':{
           if(!shared)throw Error(startupError??'Общий каталог ещё не готов');
           for(const root of request.project?.rootPaths??[]){if(!(await fs.stat(root)).isDirectory())throw Error('Рабочий каталог проекта не существует');}
@@ -123,6 +123,10 @@ const server=net.createServer(socket=>{
         case 'shared-registration':{
           if(!shared)throw Error(startupError??'Общий каталог ещё не готов');
           result=shared.registration(request.sharedId,request.profile);break;
+        }
+        case 'shared-cleanup-project':{
+          if(!shared)throw Error(startupError??'Общий каталог ещё не готов');
+          result=await shared.cleanupProject(request);break;
         }
         case 'shared-sync':shared?.wakeAll();result={queued:true};break;
         case 'shared-reconnect':for(const [key,c]of clients)if(!request.profile||c.profile.id===request.profile){await c.cdp.evaluate('window.__codexSharedDesktop?.dispose()');c.cdp.close();clients.delete(key);}result={reconnecting:true};break;

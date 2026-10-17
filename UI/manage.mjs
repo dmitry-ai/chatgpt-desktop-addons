@@ -4,7 +4,7 @@ import {fileURLToPath} from 'node:url';
 import {pipeName} from './paths.mjs';
 export function control(request) {
   return new Promise((resolve,reject)=>{
-    const socket=net.connect(pipeName);let data='';socket.setEncoding('utf8');socket.setTimeout(20000,()=>{socket.destroy();reject(Error('UI helper timeout'))});
+    const socket=net.connect(pipeName);let data='';socket.setEncoding('utf8');socket.setTimeout(request.command==='shared-cleanup-project'?50000:20000,()=>{socket.destroy();reject(Error('UI helper timeout'))});
     socket.once('connect',()=>socket.write(JSON.stringify(request)+'\n'));
     socket.on('data',chunk=>{data+=chunk;if(!data.includes('\n'))return;socket.end();try{const response=JSON.parse(data.split('\n')[0]);response.ok?resolve(response.result):reject(Error(response.error))}catch(e){reject(e)}});
     socket.once('error',reject);

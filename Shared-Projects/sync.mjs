@@ -1,6 +1,7 @@
 import {connectScript} from './desktop.mjs';
 import {observeProjects,planOperation,acknowledge,markStarted,failOperation,resumeSync,projectState,folderOperation,pendingCount,ensureProject,registrationReceipt,selectRegistrationSources} from './catalog.mjs';
 import {TrustPolicy} from './trust.mjs';
+import {cleanupProject} from './cleanup.mjs';
 const allowedEvents=new Set(['createLocal','editLocal','renameLocal','upsertLocal','removeLocal','setProjectOrder']);
 
 export class ProjectSynchronizer{
@@ -33,6 +34,7 @@ export class ProjectSynchronizer{
     await this.notify();this.wakeAll();return result;
   }
   registration(id,profileId){return {...registrationReceipt(this.store.state,id,profileId),accounts:this.status()};}
+  cleanupProject(spec){return cleanupProject(this,spec);}
   async operation(profile,operation){
     if(operation.type==='retry-sync'){
       await this.store.transact(resumeSync);
@@ -73,6 +75,7 @@ export class ProjectSynchronizer{
     return snapshot;
   }
   async run(profile){
+    if(this.cleaning)return;
     const clients=this.getClients().filter(c=>c.profile.id===profile&&!c.cdp.closed&&c.installed);
     if(!clients.length){this.health.set(profile,{state:'offline'});return;}
     for(const c of clients)await this.attach(c);
