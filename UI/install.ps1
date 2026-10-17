@@ -43,6 +43,10 @@ foreach($name in @('launch_chatgpt.vbs','launch_chatgpt2.vbs')) {
     $match=[regex]::Match($text,'(?m)^Set WshShell = CreateObject\("WScript.Shell"\)\r?$')
     if (-not $match.Success) {throw "Не найдена точка подключения в $name"}
     $text=$text.Insert($match.Index+$match.Length,"`r`n"+$vbsHook)
+    if ($name -eq 'launch_chatgpt.vbs') {
+      $c1Launch = "CodexPowerShell = WshShell.ExpandEnvironmentStrings(""%WINDIR%"") & ""\System32\WindowsPowerShell\v1.0\powershell.exe""`r`nWshShell.Run """""""" & CodexPowerShell & """""" -NoLogo -NoProfile -NonInteractive -File """""" & CodexUIToolsDir & ""\UI\code\c1-runtime.ps1"""" -Launch"", 0, False"
+      $text = [regex]::Replace($text, '(?m)^WshShell\.Run "cmd\.exe /c start .*$', $c1Launch)
+    }
     [IO.File]::WriteAllText($file,$text,[Text.UTF8Encoding]::new($false))
   }
 }

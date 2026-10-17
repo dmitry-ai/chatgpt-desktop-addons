@@ -18,13 +18,14 @@ function Prepare-CodexUpdate {
     $inUse = @([C1Runtime]::PackageProcesses())
     $deferred = $false
     if ($candidate) {
-        # Never force another profile or an active app to close. Do not submit
-        # the same deferred registration on every scan while it is still in use.
-        if ($inUse.Count -eq 0 -or $script:DeferredPackage -ne $candidate.PackageFullName) {
+        # Never force another profile or an active app to close. Register only
+        # when no package processes are running so registration finishes synchronously
+        # before activation and never drops launch arguments.
+        if ($inUse.Count -eq 0) {
             Add-Type -AssemblyName System.Runtime.WindowsRuntime
             $manager = New-Object Windows.Management.Deployment.PackageManager
             $options = New-Object Windows.Management.Deployment.RegisterPackageOptions
-            $options.DeferRegistrationWhenPackagesAreInUse = $true
+            $options.DeferRegistrationWhenPackagesAreInUse = $false
             $options.ForceAppShutdown = $false
             $options.ForceTargetAppShutdown = $false
             $options.DeveloperMode = $false
@@ -40,11 +41,10 @@ function Prepare-CodexUpdate {
             if (-not $task.Wait(30000)) { throw 'Windows registration has not completed within 30 seconds.' }
             $result = $task.GetAwaiter().GetResult()
             if ($result.ExtendedErrorCode -and $result.ExtendedErrorCode.HResult -ne 0) { throw $result.ExtendedErrorCode }
-            $deferred = -not $result.IsRegistered
-            $script:DeferredPackage = if ($deferred) { $candidate.PackageFullName } else { $null }
+            $current = Get-AppxPackage -Name OpenAI.Codex | Where-Object { $_.PackageFamilyName -eq $family } |
+                Sort-Object Version -Descending | Select-Object -First 1
+            $deferred = [version]$current.Version -lt [version]$candidate.Version
         } else { $deferred = $true }
-        $current = Get-AppxPackage -Name OpenAI.Codex | Where-Object { $_.PackageFamilyName -eq $family } |
-            Sort-Object Version -Descending | Select-Object -First 1
     }
     $newer = $false
     if ($OriginPackage) {
@@ -58,8 +58,11 @@ try {
     $packageSource = Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'Multi-Account\code\CodexPackage.cs'
     Add-Type -Path @($packageSource, (Join-Path $PSScriptRoot 'C1Runtime.cs')) -ReferencedAssemblies @('System.Xml.dll','System.Xml.Linq.dll','System.Management.dll')
     if ($Launch) {
-        $prepared = Prepare-CodexUpdate
-        if (-not $prepared.Ready) { throw 'A Codex update is waiting for other Codex processes to exit. Fully exit C1/C2, then open C1 again.' }
+        $existing = [C1Runtime]::Probe()
+        if ($null -eq $existing) {
+            $prepared = Prepare-CodexUpdate
+            if (-not $prepared.Ready) { throw 'A Codex update is waiting for other Codex processes to exit. Fully exit C1/C2, then open C1 again.' }
+        }
         $pidStarted = [C1Runtime]::Launch($true)
         Add-Content -LiteralPath (Join-Path $PSScriptRoot 'ui.log') -Value (([DateTime]::UtcNow.ToString('o'))+' C1 shortcut launch verified, PID '+$pidStarted)
         exit 0
@@ -76,15 +79,17 @@ try {
             }
             [Console]::WriteLine((@{ok=$true;result=$result} | ConvertTo-Json -Depth 5 -Compress))
         } catch {
-            [Console]::WriteLine((@{ok=$false;error=$_.Exception.Message} | ConvertTo-Json -Compress))
+            $errMsg = if ($_.Exception.InnerException) { $_.Exception.InnerException.Message } else { $_.Exception.Message }
+            [Console]::WriteLine((@{ok=$false;error=$errMsg} | ConvertTo-Json -Compress))
         }
     }
 } catch {
-    [Console]::Error.WriteLine($_.Exception.Message)
+    $errMsg = if ($_.Exception.InnerException) { $_.Exception.InnerException.Message } else { $_.Exception.Message }
+    [Console]::Error.WriteLine($errMsg)
     if ($Launch) {
-        Add-Content -LiteralPath (Join-Path $PSScriptRoot 'ui.log') -Value (([DateTime]::UtcNow.ToString('o'))+' C1 launch failed: '+$_.Exception.Message)
+        Add-Content -LiteralPath (Join-Path $PSScriptRoot 'ui.log') -Value (([DateTime]::UtcNow.ToString('o'))+' C1 launch failed: '+$errMsg)
         Add-Type -AssemblyName System.Windows.Forms
-        [System.Windows.Forms.MessageBox]::Show($_.Exception.Message,'Codex — C1') | Out-Null
+        [System.Windows.Forms.MessageBox]::Show($errMsg,'Codex — C1') | Out-Null
     }
     exit 1
 }

@@ -21,7 +21,7 @@ try {
         throw 'Unexpected temporary test path.'
     }
     if (Test-Path -LiteralPath $resolvedTestRoot) {
-        Add-Type -AssemblyName Microsoft.VisualBasic.Core
+        try { Add-Type -AssemblyName Microsoft.VisualBasic } catch { Add-Type -AssemblyName Microsoft.VisualBasic.Core }
         [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($resolvedTestRoot,
             [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs,
             [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin)
