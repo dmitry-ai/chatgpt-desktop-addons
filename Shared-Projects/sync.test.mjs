@@ -1,0 +1,55 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import vm from 'node:vm';
+import {CatalogStore,migrateSeeds,stateDirectory,ensureProject,selectRegistrationSources} from './catalog.mjs';
+import {TrustPolicy} from './trust.mjs';
+import {ProjectSynchronizer} from './sync.mjs';
+
+test('both closed profiles keep an idempotent durable producer request across helper restarts',async t=>{
+  const root=path.join(stateDirectory,'tests');await fs.mkdir(root,{recursive:true});
+  const dir=await fs.mkdtemp(path.join(root,'offline-'));
+  t.after(async()=>{assert.ok(path.resolve(dir).startsWith(path.resolve(root)+path.sep));await fs.rm(dir,{recursive:true,force:true});});
+  const workspace=path.join(dir,'daily','one');await fs.mkdir(workspace,{recursive:true});
+  const runtime=path.join(dir,'runtime.json'),policyFile=path.join(dir,'policy.json'),file=path.join(dir,'catalog.json');
+  await fs.writeFile(runtime,JSON.stringify({workspace_root:dir,daily_root:'daily'}));await fs.writeFile(policyFile,JSON.stringify({upworkRuntime:runtime}));
+  const profiles=['C1','C2'].map(id=>({id,home:path.join(dir,id)}));
+  await fs.writeFile(file,JSON.stringify(migrateSeeds(profiles.map(p=>({...p,projects:{}})))));
+  const make=async()=>{
+    const store=new CatalogStore(file);await store.load([]);
+    return new ProjectSynchronizer({store,profiles,getClients:()=>[],notify:async()=>{},log:async()=>{},trustPolicy:new TrustPolicy(policyFile)});
+  };
+  const spec={name:'Offline',rootPaths:[workspace],folderPath:['Upwork'],trustPolicy:'upwork-daily'};
+  const first=await make(),receipt=await first.ensureProject('C2',spec);await first.stop();
+  assert.equal(receipt.complete,false);assert.equal(receipt.status,'pending');assert.equal(first.status().C1.state,'offline');
+  const after=await make(),again=await after.ensureProject('C2',spec);await after.stop();
+  assert.equal(again.shared_id,receipt.shared_id);assert.deepEqual(again.profiles,receipt.profiles);
+  assert.equal(Object.keys(after.store.state.projects).length,1);assert.equal(after.store.state.operations.length,0);
+  assert.equal(after.status().C2.pending,1);
+});
+
+test('synchronizer never publishes an unstarted source plan before accepting it',async()=>{
+  const state=migrateSeeds(['C1','C2'].map(id=>({id,projects:{}})));
+  const {shared_id:id}=ensureProject(state,'C2',{name:'Atomic source',rootPaths:['C:\\daily\\one'],folderPath:['Upwork'],trustPolicy:'upwork-daily'});
+  let retargeted=false;const dispatches=[];
+  const store={state,async transact(action){
+    const next=structuredClone(this.state),result=await action(next);this.state=next;
+    // This is exactly the point where another legal catalogue transaction can
+    // retarget an unstarted source. A fully atomic acceptance leaves no such gap.
+    if(this.state.operations.some(op=>op.profile==='C2'&&!op.startedAt)){
+      selectRegistrationSources(this.state,['C1']);retargeted=true;
+    }
+    return {state:structuredClone(this.state),result:structuredClone(result)};
+  }};
+  const sandbox={window:{__codexSharedDesktop:{drainEvents:()=>[],read:()=>({}),retainOperations:()=>{},startOperation:op=>{
+    dispatches.push({profile:op.profile,source:store.state.projects[id].registrationSource,started:!!op.startedAt});
+    return {state:'pending'};
+  }}}};
+  const profiles=['C1','C2'].map(id=>({id,home:'C:\\profiles\\'+id}));
+  const client={profile:profiles[1],installed:true,sharedReady:true,sharedInfo:{appVersion:'isolated'},cdp:{closed:false,evaluate:async expression=>vm.runInNewContext(expression,sandbox)}};
+  const synchronizer=new ProjectSynchronizer({store,profiles,getClients:()=>[client],notify:async()=>{},log:async()=>{},trustPolicy:{operation:async()=>null}});
+  await synchronizer.run('C2');await synchronizer.stop();
+  assert.equal(retargeted,false,'No externally visible unstarted plan may cross the transaction boundary');
+  assert.deepEqual(dispatches,[{profile:'C2',source:'C2',started:true}]);
+});

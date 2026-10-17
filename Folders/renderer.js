@@ -3,7 +3,7 @@ function installCodexFolders(options) {
   window.__codexUi?.dispose();
   const {state:initial,css,profile}=options;
   let state=initial,disposed=false,timer=null,dialog=null,toastTimer=null,renderedRevision=-1;
-  const roots=new Map(),pending=new Map(),nativeNodes=new Set(),rowButtons=new Map(),toolbars=new Map(),fallbacks=new Map();
+  const roots=new Map(),pending=new Map(),nativeNodes=new Set(),rowButtons=new Map(),toolbars=new Map(),fallbacks=new Map(),paginationStyles=new Map(),expansionRequests=new Map();
   const byId=()=>new Map(state.folders.map(f=>[f.id,f]));
   const collator=new Intl.Collator(undefined,{numeric:true,sensitivity:'base'});
   const style=document.createElement('style');style.dataset.codexUi='style';style.textContent=css;
@@ -149,24 +149,68 @@ function installCodexFolders(options) {
     const key=kind+':'+(container?.dataset.sidebarProjectContainerId??row.dataset.appActionSidebarProjectId);
     return {row,outer,key,id:row.dataset.appActionSidebarProjectId,label:row.dataset.appActionSidebarProjectLabel??''};
   }
+  function projectSection(node) {
+    const section=node.closest('[data-app-action-sidebar-section]');
+    return section&&!section.closest('[data-app-shell-active-page="false"]')&&section.querySelector('[data-app-action-sidebar-project-create]')?section:null;
+  }
+  function nativePagination(child,list) {
+    // The installed Projects list has a final native listitem with one Show more button.
+    // Its project-chat pagination controls are inside project items and are not eligible.
+    if(child.getAttribute('role')!=='listitem'||child.querySelector('[data-app-action-sidebar-project-row],[data-app-action-sidebar-thread-row],[role=list]'))return null;
+    const buttons=child.querySelectorAll('button');if(buttons.length!==1)return null;
+    const control=buttons[0];if(control.closest('[role=list]')!==list)return null;
+    const label=control.textContent.replace(/\s+/g,' ').trim();
+    return label==='Show more'||paginationStyles.has(child)&&(control.disabled||control.getAttribute('aria-disabled')==='true')?control:null;
+  }
+  function restorePagination(node) {
+    const saved=paginationStyles.get(node);if(!saved)return;
+    if(saved.value)node.style.setProperty('order',saved.value,saved.priority);else node.style.removeProperty('order');
+    paginationStyles.delete(node);
+  }
+  function restoreNative(node) {
+    for(const attribute of ['data-cui-project','data-cui-hidden','data-cui-list','data-cui-project-row'])node.removeAttribute(attribute);
+    node.style.removeProperty('--cui-depth');node.style.removeProperty('--cui-order');
+  }
+  function expandProjects(list,items,control) {
+    const section=projectSection(list),signature=items.map(item=>item.key).sort().join('\n');
+    if(!section||section.dataset.appActionSidebarSectionCollapsed==='true'||control.disabled||control.getAttribute('aria-disabled')==='true'||expansionRequests.get(list)?.signature===signature)return;
+    const record={signature,requests:(expansionRequests.get(list)?.requests??0)+1,control};
+    expansionRequests.set(list,record);
+    queueMicrotask(()=>{
+      const footer=control.closest('[role=listitem]');
+      if(disposed||expansionRequests.get(list)!==record||!list.isConnected||!control.isConnected||projectSection(list)!==section||section.dataset.appActionSidebarSectionCollapsed==='true'||control.disabled||control.getAttribute('aria-disabled')==='true'||!footer||nativePagination(footer,list)!==control||[...list.children].some(child=>child!==roots.get(list)&&child!==footer&&!items.some(item=>item.outer===child))){
+        if(expansionRequests.get(list)===record)expansionRequests.delete(list);schedule();return;
+      }
+      const focused=document.activeElement;
+      // Use the native onExpandedChange/revealAllOnExpand path; never access React internals.
+      control.click();
+      queueMicrotask(()=>{
+        if(disposed)return;
+        // Native pagination queues focus onto its list. Keep an active editor's focus.
+        const active=document.activeElement;
+        if(focused?.isConnected&&(active===list||footer?.contains(active))){if(focused===document.body)active?.blur();else focused.focus({preventScroll:true})}
+        schedule();
+      });
+    });
+  }
   function reconcile() {
     timer=null;if(disposed||!document.body)return;
-    observer.disconnect();const focus=document.activeElement?.dataset.cuiFolderToggle;
+    observer.disconnect();const focused=document.activeElement,focus=focused?.dataset.cuiFolderToggle,focusList=focused?.closest('[role=list]');
     try {
       if(!style.isConnected)document.head.append(style);
       for(const [row,b] of rowButtons)if(!row.isConnected){b.remove();rowButtons.delete(row)}
       for(const [list,root] of roots)if(!list.isConnected){root.remove();roots.delete(list)}
       for(const [section,toolbar] of toolbars)if(!section.isConnected){toolbar.remove();toolbars.delete(section)}
       const projectRanks=new Map((state.projectOrder??[]).map((key,index)=>[key,index]));
-      const lists=new Map();
+      const lists=new Map(),activeLists=new Set(),activeRows=new Set(),activeNative=new Set(),activePagination=new Set(),activeSections=new Set();
       for(const row of document.querySelectorAll('[data-app-action-sidebar-project-row]')) {
-        if(!row.closest('[data-app-action-sidebar-section]')?.querySelector('[data-app-action-sidebar-project-create]'))continue;
+        if(!projectSection(row))continue;
         const list=row.closest('[role=list]');if(!list)continue;
         const item=nativeProject(row,list);if(!item)continue;
         const items=lists.get(list)??[];items.push(item);lists.set(list,items);
       }
       for(const create of document.querySelectorAll('[data-app-action-sidebar-project-create]')) {
-        const section=create.closest('[data-app-action-sidebar-section]');if(!section)continue;
+        const section=projectSection(create);if(!section)continue;activeSections.add(section);
         const heading=section.querySelector('[data-app-action-sidebar-section-toggle]');
         if(heading?.parentElement&&!toolbars.get(section)?.isConnected){
           const bar=element('span','cui-toolbar');bar.dataset.codexUi='toolbar';
@@ -183,15 +227,24 @@ function installCodexFolders(options) {
       }
       for(const [list,items] of lists) {
         // Never reorder a mixed native pinned list containing unrelated chats.
-        if([...list.children].some(child=>!child.classList.contains('cui-root')&&!items.some(i=>i.outer===child)))continue;
-        list.dataset.cuiList='';nativeNodes.add(list);
+        const children=[...list.children].filter(child=>child!==roots.get(list));
+        const other=children.filter(child=>!items.some(item=>item.outer===child));
+        const footer=other.length===1&&other[0]===children.at(-1)?other[0]:null;
+        const control=footer&&nativePagination(footer,list);
+        if(other.length&&!control)continue;
+        activeLists.add(list);list.dataset.cuiList='';nativeNodes.add(list);activeNative.add(list);
+        if(control){
+          if(!paginationStyles.has(footer))paginationStyles.set(footer,{value:footer.style.getPropertyValue('order'),priority:footer.style.getPropertyPriority('order')});
+          footer.style.setProperty('order','2147483647');activePagination.add(footer);expandProjects(list,items,control);
+        }
         let root=roots.get(list);if(!root||!root.isConnected){root=element('div','cui-root');root.dataset.codexUi='folders';list.append(root);roots.set(list,root)}
         const fragment=document.createDocumentFragment();let order=0;
         function place(item,depth,hidden) {
           item.outer.dataset.cuiProject=item.key;item.outer.style.setProperty('--cui-order',++order);item.outer.style.setProperty('--cui-depth',depth);
-          item.outer.toggleAttribute('data-cui-hidden',hidden);nativeNodes.add(item.outer);
-          item.row.dataset.cuiProjectRow='';nativeNodes.add(item.row);
-          let b=rowButtons.get(item.row);if(!b||!b.isConnected){
+          item.outer.toggleAttribute('data-cui-hidden',hidden);nativeNodes.add(item.outer);activeNative.add(item.outer);
+          item.row.dataset.cuiProjectRow='';nativeNodes.add(item.row);activeNative.add(item.row);activeRows.add(item.row);
+          let b=rowButtons.get(item.row);if(!b||!b.isConnected||b.dataset.cuiProjectAssign!==item.key){
+            b?.remove();
             b=button('Переместить проект в папку','',()=>assignProject(item.key,item.row.dataset.appActionSidebarProjectLabel??item.label),'cui-icon-button cui-assign');b.innerHTML=icon;b.dataset.cuiProjectAssign=item.key;
             b.draggable=true;b.ondragstart=e=>{e.stopPropagation();e.dataTransfer.setData('application/x-codex-folder',JSON.stringify({kind:'project',key:item.key}));e.dataTransfer.effectAllowed='move'};
             item.row.append(b);rowButtons.set(item.row,b);
@@ -206,22 +259,29 @@ function installCodexFolders(options) {
         }
         visit(null,0,false);root.replaceChildren(fragment);
       }
-      if(focus)document.querySelector('[data-cui-folder-toggle="'+CSS.escape(focus)+'"]')?.focus({preventScroll:true});
+      for(const [list,root] of roots)if(!activeLists.has(list)){root.remove();roots.delete(list)}
+      for(const [row,b] of rowButtons)if(!activeRows.has(row)){b.remove();rowButtons.delete(row)}
+      for(const node of nativeNodes)if(!activeNative.has(node)){restoreNative(node);nativeNodes.delete(node)}
+      for(const node of paginationStyles.keys())if(!activePagination.has(node))restorePagination(node);
+      for(const [section,bar] of toolbars)if(!activeSections.has(section)){bar.remove();toolbars.delete(section)}
+      for(const [section,list] of fallbacks)if(!activeSections.has(section)){list.remove();fallbacks.delete(section)}
+      for(const list of expansionRequests.keys())if(!list.isConnected||!activeLists.has(list))expansionRequests.delete(list);
+      if(focus)focusList?.querySelector('[data-cui-folder-toggle="'+CSS.escape(focus)+'"]')?.focus({preventScroll:true});
       renderedRevision=state.revision;
     } catch(error) {console.warn('[codex-folders]',error)}
-    finally {if(!disposed)observer.observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['data-app-action-sidebar-project-collapsed','data-app-action-sidebar-project-label','data-app-action-sidebar-section-collapsed']})}
+    finally {if(!disposed)observer.observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['data-app-action-sidebar-project-collapsed','data-app-action-sidebar-project-label','data-app-action-sidebar-section-collapsed','data-app-shell-active-page','disabled','aria-disabled']})}
   }
   function schedule() {if(!timer&&!disposed)timer=setTimeout(reconcile,50)}
   const observer=new MutationObserver(records=>{
-    if(records.some(r=>!r.target.closest?.('.cui-dialog,.cui-toast,.cui-root')&&(r.target.closest?.('[data-app-action-sidebar-section]')||[...r.addedNodes].some(n=>n.nodeType===1&&(n.matches('[data-app-action-sidebar-section]')||n.querySelector('[data-app-action-sidebar-section]'))))))schedule();
+    if(records.some(r=>!r.target.closest?.('.cui-dialog,.cui-toast,.cui-root')&&(r.target.closest?.('[data-app-action-sidebar-section]')||r.attributeName==='data-app-shell-active-page'&&r.target.querySelector?.('[data-app-action-sidebar-section]')||[...r.addedNodes,...r.removedNodes].some(n=>n.nodeType===1&&(n.matches('[data-app-action-sidebar-section]')||n.querySelector('[data-app-action-sidebar-section]'))))))schedule();
   });
   const api={version:1,profile,
     updateState(value){state=value;schedule()},
     resolve(id,result){const p=pending.get(id);if(!p)return;pending.delete(id);clearTimeout(p.timeout);result.ok?p.resolve(result.state):p.reject(Error(result.error))},
-    inspect(){return {profile,revision:state.revision,renderedRevision,folders:state.folders,projects:[...document.querySelectorAll('[data-cui-project]')].map(e=>({key:e.dataset.cuiProject,hidden:e.hasAttribute('data-cui-hidden'),depth:e.style.getPropertyValue('--cui-depth'),order:e.style.getPropertyValue('--cui-order')})),lists:roots.size}},
+    inspect(){return {profile,revision:state.revision,renderedRevision,folders:state.folders,projects:[...document.querySelectorAll('[data-cui-project]')].map(e=>({key:e.dataset.cuiProject,hidden:e.hasAttribute('data-cui-hidden'),depth:e.style.getPropertyValue('--cui-depth'),order:e.style.getPropertyValue('--cui-order')})),lists:roots.size,pagination:[...expansionRequests].map(([list,value])=>({requests:value.requests,controlPresent:value.control.isConnected,visibleProjects:list.querySelectorAll('[data-app-action-sidebar-project-row]').length}))}},
     // This local API is also used by regression checks and the CLI; it does not call Codex APIs.
     request,
-    dispose(){disposed=true;clearTimeout(timer);clearTimeout(toastTimer);observer.disconnect();closeDialog();style.remove();document.querySelector('.cui-toast')?.remove();for(const root of roots.values())root.remove();for(const bar of toolbars.values())bar.remove();for(const list of fallbacks.values())list.remove();for(const b of rowButtons.values())b.remove();for(const n of nativeNodes){for(const a of ['data-cui-project','data-cui-hidden','data-cui-list','data-cui-project-row'])n.removeAttribute(a);n.style.removeProperty('--cui-depth');n.style.removeProperty('--cui-order')}for(const p of pending.values()){clearTimeout(p.timeout);p.reject(Error('UI module disconnected'))}pending.clear();if(window.__codexUi===api)delete window.__codexUi}
+    dispose(){disposed=true;clearTimeout(timer);clearTimeout(toastTimer);observer.disconnect();closeDialog();style.remove();document.querySelector('.cui-toast')?.remove();for(const root of roots.values())root.remove();for(const bar of toolbars.values())bar.remove();for(const list of fallbacks.values())list.remove();for(const b of rowButtons.values())b.remove();for(const n of nativeNodes)restoreNative(n);for(const n of paginationStyles.keys())restorePagination(n);expansionRequests.clear();for(const p of pending.values()){clearTimeout(p.timeout);p.reject(Error('UI module disconnected'))}pending.clear();if(window.__codexUi===api)delete window.__codexUi}
   };
   window.__codexUi=api;
   if(document.body)reconcile();else document.addEventListener('DOMContentLoaded',reconcile,{once:true});

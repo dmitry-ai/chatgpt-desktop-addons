@@ -1,3 +1,5 @@
+import {ensureTrustedRoots} from './trust.mjs';
+
 // Browser-side project capability discovery. No installation files or credentials are read.
 export function findProjectServiceExport(source) {
   const candidates = [];
@@ -30,6 +32,34 @@ export function findProjectHostImport(source) {
   return matches[0];
 }
 
+export function findMessageBusImport(source){
+  const names=[...new Set([...source.matchAll(/([\w$]+)\.subscribe\([`'"]shared-object-updated[`'"]/g)].map(m=>m[1]))];
+  if(names.length!==1||!source.includes(names[0]+'.dispatchMessage('))throw Error('Desktop message bus is ambiguous');
+  const matches=[];
+  for(const m of source.matchAll(/import\s*\{([^}]+)\}\s*from\s*(['"`])([^'"`]+)\2/g))for(const entry of m[1].split(',')){
+    const parts=entry.trim().split(/\s+as\s+/);
+    if((parts[1]??parts[0])===names[0])matches.push({name:parts[0],url:m[3]});
+  }
+  if(matches.length!==1)throw Error('Desktop message bus import is ambiguous');
+  return matches[0];
+}
+
+export function configRequest(bus,method,params){
+  if(!['config/read','config/batchWrite'].includes(method))throw Error('Unsupported shared-project config method');
+  return new Promise((resolve,reject)=>{
+    const id=crypto.randomUUID();let timer,off=()=>{};
+    const finish=(error,result)=>{clearTimeout(timer);off();error?reject(error):resolve(result);};
+    try{
+      off=bus.subscribe('mcp-response',event=>{
+        if(event.hostId!=='local'||event.message?.id!==id)return;
+        event.message.error?finish(Error(event.message.error.message)):finish(null,event.message.result);
+      });
+      timer=setTimeout(()=>finish(Error('TRUST_TIMEOUT: результат конфигурационного запроса не получен')),15000);
+      bus.dispatchMessage('mcp-request',{hostId:'local',request:{id,method,params},priority:'interactive',source:'config',timeoutMs:15000});
+    }catch(error){finish(error);}
+  });
+}
+
 // A native folder confirmation may remain open indefinitely. Keep its one promise
 // in the renderer instead of submitting another RPC after a CDP timeout.
 export function operationLedger(tasks, execute, changed) {
@@ -37,7 +67,7 @@ export function operationLedger(tasks, execute, changed) {
     : task.state === 'failed' ? {state:'failed',error:task.error} : {state:'pending'};
   return {
     start(operation,allowStart=true) {
-      const key=JSON.stringify([operation.type,operation.desktopId,operation.value,operation.expected,operation.registration,operation.approvedBy]);
+      const key=JSON.stringify([operation.type,operation.desktopId,operation.value,operation.expected,operation.registration,operation.approvedBy,operation.trust]);
       const previous=tasks.get(operation.id);
       if(previous){if(previous.key!==key)throw Error('Operation ID was reused with different data');return state(previous);}
       if(!allowStart)return {state:'blocked'};
@@ -53,8 +83,8 @@ export function operationLedger(tasks, execute, changed) {
   };
 }
 
-async function connectDesktop(findExport, findHost, makeLedger) {
-  if (window.__codexSharedDesktop?.version === 6) return window.__codexSharedDesktop.info;
+async function connectDesktop(findExport, findHost, makeLedger,findBus,requestConfig,ensureTrust) {
+  if (window.__codexSharedDesktop?.version === 7) return window.__codexSharedDesktop.info;
   let urls = [...new Set([
     ...performance.getEntriesByType('resource').map(e => e.name),
     ...[...document.scripts].map(e => e.src)
@@ -85,6 +115,9 @@ async function connectDesktop(findExport, findHost, makeLedger) {
   const projects = module[name]();
   const binding = findHost(source);
   const host = (await import(new URL(binding.url,url).href))[binding.name];
+  const busBinding=findBus(source);
+  const bus=(await import(new URL(busBinding.url,url).href))[busBinding.name];
+  if(typeof bus?.subscribe!=='function'||typeof bus?.dispatchMessage!=='function')throw Error('Desktop config connection is unavailable');
   const descriptor = Object.getOwnPropertyDescriptor(host,'projects');
   if (host.projects !== projects || !descriptor?.writable) throw Error('Desktop project capability cannot be safely observed');
   const read = async () => {
@@ -123,10 +156,10 @@ async function connectDesktop(findExport, findHost, makeLedger) {
   const snapshot = clean(await read());
   const info = {url, exportName:name, appVersion:window.electronBridge?.getSentryInitOptions?.().appVersion ?? null};
   const api = window.__codexSharedDesktop = {
-    version:6, info, read:async()=>clean(await read()),
+    version:7, info, read:async()=>clean(await read()),
     drainEvents(){return events.splice(0)},
     dispose(){if(host.projects===proxy)host.projects=projects;delete window.__codexSharedDesktop},
-    async upsert(item, expected, registration='sync') {
+    async upsert(item, expected, registration='sync',trust=null) {
       if(!['sync','restore'].includes(registration))throw Error('Неизвестный режим регистрации проекта');
       if (!item || typeof item.id !== 'string' || !item.id || typeof item.name !== 'string' ||
           !item.name.trim() || !Array.isArray(item.rootPaths) || !item.rootPaths.length) throw Error('Некорректная операция проекта');
@@ -137,11 +170,16 @@ async function connectDesktop(findExport, findHost, makeLedger) {
       if (existing?.chatGptBacking || existing?.chatGptBackingCreation || existing?.retiredChatGptBacking) {
         throw Error('Облачные проекты ChatGPT не синхронизируются этим модулем');
       }
+      if(trust&&JSON.stringify(trust.roots)!==JSON.stringify(item.rootPaths))throw Error('TRUST_POLICY: корни операции не совпали');
+      const verified=trust?await ensureTrust((method,params)=>requestConfig(bus,method,params),trust):null;
+      const checked=(await read())[item.id];
+      if(fields(checked)!==fields(existing))throw Error('PROJECT_CHANGED: проект изменён во время проверки доверия');
+      if(checked?.chatGptBacking||checked?.chatGptBackingCreation||checked?.retiredChatGptBacking)throw Error('PROJECT_CHANGED: проект стал облачным');
       const ok = await projects.upsertLocal({projectId:item.id,name:item.name,sources:item.rootPaths}, registration);
       if (ok !== true) throw Error('Приложение не подтвердило сохранение проекта');
       const after = await read();
       if (!after[item.id]) throw Error('Проект не появился после сохранения');
-      return clean(after)[item.id];
+      return {...clean(after)[item.id],...(verified?{trust:verified}:{})};
     },
     async remove(id,expected) {
       const before = await read();const existing=before[id];
@@ -155,7 +193,7 @@ async function connectDesktop(findExport, findHost, makeLedger) {
   };
   const tasks=window.__codexSharedTasks??=new Map();
   const ledger=makeLedger(tasks,op=>op.type==='upsert'?api.upsert({id:op.desktopId,...op.value},op.expected,
-    op.registration==='restore'&&typeof op.approvedBy==='string'?'restore':'sync'):api.remove(op.desktopId,op.expected),
+    op.registration==='restore'&&typeof op.approvedBy==='string'?'restore':'sync',op.trust):api.remove(op.desktopId,op.expected),
     ()=>window.__codexSharedChanged?.(JSON.stringify({event:'operation'})));
   api.startOperation=(operation,allowStart)=>ledger.start(operation,allowStart);
   api.forgetOperation=id=>ledger.forget(id);
@@ -163,4 +201,4 @@ async function connectDesktop(findExport, findHost, makeLedger) {
   return {...info, snapshot};
 }
 
-export const connectScript = () => '(' + connectDesktop.toString() + ')(' + findProjectServiceExport.toString() + ',' + findProjectHostImport.toString() + ','+operationLedger.toString()+')';
+export const connectScript = () => '(' + connectDesktop.toString() + ')(' + [findProjectServiceExport,findProjectHostImport,operationLedger,findMessageBusImport,configRequest,ensureTrustedRoots].map(fn=>fn.toString()).join(',')+')';

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import {CatalogStore,migrateSeeds,observeProjects,planOperation,acknowledge,markStarted,failOperation,resumeSync,folderOperation,projectState,pendingCount,resolveConflict,identity,rootKey,stateDirectory,ensureProject,registrationReceipt} from './catalog.mjs';
+import {CatalogStore,migrateSeeds,observeProjects,planOperation,acknowledge,markStarted,failOperation,resumeSync,folderOperation,projectState,pendingCount,resolveConflict,identity,rootKey,stateDirectory,ensureProject,registrationReceipt,selectRegistrationSources} from './catalog.mjs';
 import {findProjectServiceExport,findProjectHostImport,operationLedger} from './desktop.mjs';
 const project=(id,name='Project',rootPaths=['C:\\work\\project'])=>({id,name,rootPaths});
 const folder=(id,name,parentId=null)=>({id,name,parentId});
@@ -174,4 +174,32 @@ test('serialized writes preserve edits from both accounts and corrupt JSON is ne
  assert.equal(planOperation(restarted.state,'C2',snapshot([project('native-2')])).id,waiting.id);
  assert.equal(pendingCount(restarted.state,'C2'),1);
  await fs.writeFile(file,'{broken');await assert.rejects(store.transact(s=>s.revision++));assert.equal(await fs.readFile(file,'utf8'),'{broken');assert.equal(store.state.folders.length,3);
+});
+
+test('a pending trusted producer switches from closed C2 to available C1 without replacing IDs',()=>{
+ const s=migrateSeeds([seed('C1',[]),seed('C2',[])]);
+ const spec={name:'Upwork',rootPaths:['C:\\work\\upwork\\code\\proposals\\daily\\one'],folderPath:['Upwork'],trustPolicy:'upwork-daily'};
+ const pending=ensureProject(s,'C2',spec),id=pending.shared_id;
+ const ids=Object.fromEntries(Object.entries(s.profiles).map(([name,p])=>[name,p.bindings[id].desktopId]));
+ assert.equal(pending.status,'pending');assert.equal(pending.registration_source,'C2');
+ const again=ensureProject(s,'C2',spec,{availableProfiles:['C1']});
+ assert.equal(again.shared_id,id);assert.equal(again.registration_source,'C1');
+ assert.deepEqual(Object.fromEntries(Object.entries(s.profiles).map(([name,p])=>[name,p.bindings[id].desktopId])),ids);
+ assert.equal(planOperation(s,'C2',{}),null);
+ const source=planOperation(s,'C1',{});assert.equal(source.registration,'sync');assert.equal(source.approvedBy,null);
+ acknowledge(s,source,{id:source.desktopId,...source.value});
+ const copy=planOperation(s,'C2',{});assert.equal(copy.registration,'restore');assert.equal(copy.approvedBy,'C1');
+});
+
+test('source selection preserves in-flight acceptance and explicit untrusted remains queued without dispatch',()=>{
+ const s=migrateSeeds([seed('C1',[]),seed('C2',[])]);
+ const spec={name:'Upwork',rootPaths:['C:\\daily\\one'],folderPath:['Upwork'],trustPolicy:'upwork-daily'};
+ const {shared_id:id}=ensureProject(s,'C2',spec);
+ const op=markStarted(s,planOperation(s,'C2',{}).id);
+ selectRegistrationSources(s,['C1']);assert.equal(s.projects[id].registrationSource,'C2');
+ failOperation(s,op.id,'UNTRUSTED_PROJECT: exact root',{registrationBlock:'untrusted'});
+ const restarted=JSON.parse(JSON.stringify(s));
+ assert.equal(registrationReceipt(restarted,id,'C2').status,'untrusted');
+ assert.equal(planOperation(restarted,'C2',{}),null);assert.equal(pendingCount(restarted,'C2'),1);
+ resumeSync(restarted);assert.ok(planOperation(restarted,'C2',{}));
 });

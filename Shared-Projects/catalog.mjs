@@ -36,7 +36,10 @@ function logicalForNative(state,profile,key){
 
 export function validateCatalog(state){
   if(state?.schemaVersion!==1||!Number.isSafeInteger(state.revision)||state.revision<0||!state.projects||!state.profiles||!Array.isArray(state.projectOrder)||!Array.isArray(state.conflicts)||!Array.isArray(state.operations))throw Error('Некорректный формат общего каталога');
-  for(const [id,p]of Object.entries(state.projects))if(id!==p.id||!validProject(p))throw Error('Некорректный общий проект');
+  for(const [id,p]of Object.entries(state.projects)){
+    if(id!==p.id||!validProject(p))throw Error('Некорректный общий проект');
+    if(p.trustPolicy!==undefined&&p.trustPolicy!=='upwork-daily')throw Error('Неизвестная политика доверия проекта');
+  }
   if(new Set(state.projectOrder).size!==state.projectOrder.length||state.projectOrder.some(id=>!state.projects[id]))throw Error('Некорректный порядок общих проектов');
   validateFolders({schemaVersion:1,revision:state.revision,folders:state.folders,projectFolderMap:state.projectFolderMap,collapsedFolderIds:[]});
   for(const id of Object.keys(state.projectFolderMap))if(!state.projects[id])throw Error('Папка ссылается на неизвестный проект');
@@ -155,7 +158,7 @@ export function planOperation(state,profileId,snapshot){
   const started=state.operations.find(op=>op.profile===profileId&&op.startedAt);
   if(started)return clone(started);
   for(const id of state.projectOrder){
-    const p=state.projects[id],b=profile.bindings[id];if(!b||state.conflicts.some(c=>c.projectId===id))continue;
+    const p=state.projects[id],b=profile.bindings[id];if(!b||b.registrationBlock||state.conflicts.some(c=>c.projectId===id))continue;
     const actual=snapshot[b.desktopId];
     // A tool-created project first uses the originating profile's native Trust flow.
     // Other profiles wait for that actual registration before provenance-based restore.
@@ -188,18 +191,21 @@ export function acknowledge(state,operation,result){
   const op=state.operations.find(o=>o.id===operation.id);if(!op)return;
   const b=state.profiles[op.profile].bindings[op.projectId];
   b.lastSeen=op.type==='remove'?null:fields(result);b.known=op.type!=='remove';b.missing=false;
+  if(result.trust)b.trust=clone(result.trust);
+  delete b.registrationBlock;
   state.operations=state.operations.filter(o=>o.id!==op.id);
 }
 export function markStarted(state,id){
   const op=state.operations.find(o=>o.id===id);if(!op)return null;
   op.startedAt??=new Date().toISOString();return clone(op);
 }
-export function failOperation(state,id,error,{pause=false}={}){
+export function failOperation(state,id,error,{pause=false,registrationBlock=null}={}){
   const op=state.operations.find(o=>o.id===id);if(!op)return;
   state.operations=state.operations.filter(o=>o.id!==id);
   if(pause)state.profiles[op.profile].pauseReason=String(error);
+  if(registrationBlock)state.profiles[op.profile].bindings[op.projectId].registrationBlock={status:registrationBlock,error:String(error)};
 }
-export function resumeSync(state){for(const p of Object.values(state.profiles))delete p.pauseReason;}
+export function resumeSync(state){for(const p of Object.values(state.profiles)){delete p.pauseReason;for(const b of Object.values(p.bindings))delete b.registrationBlock;}}
 export function pendingCount(state,profileId){
   let count=0;
   for(const p of Object.values(state.projects)){
@@ -232,10 +238,22 @@ export function folderOperation(state,profileId,operation){
 
 // Idempotent integration boundary for local project producers (for example Upwork).
 // The daemon owns this transaction; callers never edit catalog.json or profile files.
-export function ensureProject(state,profileId,spec){
+export function selectRegistrationSources(state,availableProfiles){
+  const available=availableProfiles.filter(id=>state.profiles[id]);
+  if(!available.length)return;
+  for(const project of Object.values(state.projects)){
+    if(project.deleted||!project.trustPolicy||!project.registrationSource||available.includes(project.registrationSource))continue;
+    if(state.operations.some(op=>op.projectId===project.id&&op.startedAt))continue;
+    const registered=Object.values(state.profiles).some(p=>{const b=p.bindings[project.id];return b?.known&&!b.missing&&b.lastSeen&&identity(b.lastSeen)===identity(project);});
+    if(!registered)project.registrationSource=available[0];
+  }
+}
+
+export function ensureProject(state,profileId,spec,{availableProfiles=[]}={}){
   if(!state.profiles[profileId])throw Error('Неизвестный исходный профиль');
   if(!spec||!validProject({id:'validation',...spec})||!Array.isArray(spec.folderPath)||
     !spec.folderPath.length||spec.folderPath.some(name=>typeof name!=='string'||!name.trim()||name.length>160))throw Error('Некорректный запрос регистрации проекта');
+  if(spec.trustPolicy!==undefined&&spec.trustPolicy!=='upwork-daily')throw Error('Неизвестная политика доверия проекта');
   const matches=Object.values(state.projects).filter(p=>!p.deleted&&identity(p)===identity(spec));
   if(matches.length>1)throw Error('Неоднозначное сопоставление рабочих каталогов проекта');
   let project=matches[0];
@@ -244,6 +262,8 @@ export function ensureProject(state,profileId,spec){
     project={id:randomUUID(),...fields(spec),registrationSource:profileId};
     state.projects[project.id]=project;state.projectOrder.push(project.id);ensureBindings(state);
   }
+  if(spec.trustPolicy)project.trustPolicy=spec.trustPolicy;
+  selectRegistrationSources(state,availableProfiles);
   let parentId=null;
   for(const name of spec.folderPath){
     const matches=state.folders.filter(f=>f.parentId===parentId&&f.name.normalize('NFKC').toLocaleLowerCase('en-US')===name.normalize('NFKC').toLocaleLowerCase('en-US'));
@@ -263,11 +283,13 @@ export function registrationReceipt(state,id,profileId){
   while(folder){branch.unshift(folder.name);folder=state.folders.find(f=>f.id===folder.parentId);}
   const profiles=Object.fromEntries(Object.entries(state.profiles).map(([name,p])=>{
     const binding=p.bindings[id],ready=!!(binding?.known&&!binding.missing&&equal(binding.lastSeen,fields(project)));
-    return [name,{project_id:binding?.desktopId??null,ready,pause_reason:p.pauseReason??null}];
+    return [name,{project_id:binding?.desktopId??null,ready,pause_reason:p.pauseReason??null,
+      registration_block:binding?.registrationBlock??null,trust:binding?.trust??null}];
   }));
   return {shared_id:id,project_name:project.name,root_paths:[...project.rootPaths],folder_id:folderId,
     folder_path:branch.join(' / '),profiles,complete:profiles[profileId].ready,
-    status:profiles[profileId].ready?'registered':'pending',
+    status:profiles[profileId].ready?'registered':profiles[profileId].registration_block?.status??'pending',
+    registration_source:project.registrationSource??null,trust_policy:project.trustPolicy??null,
     conflicts:state.conflicts.filter(c=>c.projectId===id)};
 }
 export function projectState(state,profileId,status={}){

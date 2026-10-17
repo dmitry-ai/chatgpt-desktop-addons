@@ -1,10 +1,11 @@
 import {connectScript} from './desktop.mjs';
-import {observeProjects,planOperation,acknowledge,markStarted,failOperation,resumeSync,projectState,folderOperation,pendingCount,ensureProject,registrationReceipt} from './catalog.mjs';
+import {observeProjects,planOperation,acknowledge,markStarted,failOperation,resumeSync,projectState,folderOperation,pendingCount,ensureProject,registrationReceipt,selectRegistrationSources} from './catalog.mjs';
+import {TrustPolicy} from './trust.mjs';
 const allowedEvents=new Set(['createLocal','editLocal','renameLocal','upsertLocal','removeLocal','setProjectOrder']);
 
 export class ProjectSynchronizer{
-  constructor({store,profiles,getClients,notify,log}){
-    Object.assign(this,{store,profiles,getClients,notify,log});this.runners=new Map();this.health=new Map();this.stopping=false;this.timer=null;
+  constructor({store,profiles,getClients,notify,log,trustPolicy=new TrustPolicy()}){
+    Object.assign(this,{store,profiles,getClients,notify,log,trustPolicy});this.runners=new Map();this.health=new Map();this.stopping=false;this.timer=null;
     for(const p of profiles)this.health.set(p.id,{state:'offline'});
   }
   async attach(client){
@@ -24,7 +25,9 @@ export class ProjectSynchronizer{
   status(){return Object.fromEntries(this.profiles.map(p=>[p.id,{...this.health.get(p.id),pending:pendingCount(this.store.state,p.id)}]));}
   projection(profile){return projectState(this.store.state,typeof profile==='string'?profile:profile.id,{accounts:this.status()});}
   async ensureProject(profileId,spec){
-    const {result}=await this.store.transact(state=>ensureProject(state,profileId,spec));
+    await this.trustPolicy.prepare(spec);
+    const availableProfiles=this.getClients().filter(c=>c.installed&&c.sharedReady&&!c.cdp.closed).map(c=>c.profile.id);
+    const {result}=await this.store.transact(state=>ensureProject(state,profileId,spec,{availableProfiles}));
     await this.notify();this.wakeAll();return result;
   }
   registration(id,profileId){return {...registrationReceipt(this.store.state,id,profileId),accounts:this.status()};}
@@ -74,16 +77,22 @@ export class ProjectSynchronizer{
     const client=clients.find(c=>c.sharedReady);
     if(!client)return;
     let snapshot=await this.collect(profile,client);
+    await this.store.transact(s=>selectRegistrationSources(s,this.getClients().filter(c=>c.installed&&c.sharedReady&&!c.cdp.closed).map(c=>c.profile.id)));
     await client.cdp.evaluate('window.__codexSharedDesktop.retainOperations('+JSON.stringify(this.store.state.operations.map(o=>o.id))+')');
     const pauseReason=this.store.state.profiles[profile].pauseReason;
     if(pauseReason){this.health.set(profile,{state:'paused',error:pauseReason,manualRetry:true,appVersion:client.sharedInfo?.appVersion});return;}
     if(this.health.get(profile)?.retryAt>Date.now())return;
     this.health.set(profile,{state:'connected',appVersion:client.sharedInfo?.appVersion});
     for(let count=0;count<8&&!this.stopping;count++){
-      const {result:planned}=await this.store.transact(s=>planOperation(s,profile,snapshot));
-      if(!planned)break;
-      const {result:operation}=await this.store.transact(s=>markStarted(s,planned.id));
-      if(!operation)continue;
+      const {result:operation}=await this.store.transact(async s=>{
+        // Selecting the source and accepting its plan must be atomic with
+        // markStarted; another profile cannot retarget an unstarted plan here.
+        const planned=planOperation(s,profile,snapshot);if(!planned)return null;
+        const current=s.operations.find(op=>op.id===planned.id);if(!current)return null;
+        if(!current.startedAt)current.trust=await this.trustPolicy.operation(s.projects[current.projectId],current,this.profiles.find(p=>p.id===profile));
+        return markStarted(s,planned.id);
+      });
+      if(!operation)break;
       try{
         const allowStart=!this.store.state.conflicts.some(c=>c.projectId===operation.projectId);
         const result=await client.cdp.evaluate('window.__codexSharedDesktop.startOperation('+JSON.stringify(operation)+','+allowStart+')');
@@ -95,7 +104,8 @@ export class ProjectSynchronizer{
           this.health.set(profile,{state:'paused',error:'Операция ожидает разрешения конфликта',appVersion:client.sharedInfo?.appVersion});return;
         }
         if(result.state==='failed'){
-          await this.store.transact(s=>failOperation(s,operation.id,result.error,{pause:result.error.includes('не подтвердило сохранение')}));
+          const registrationBlock=result.error.startsWith('UNTRUSTED_PROJECT:')?'untrusted':/^(TRUST_|TRUST_PROFILE_)/.test(result.error)?'blocked':null;
+          await this.store.transact(s=>failOperation(s,operation.id,result.error,{pause:result.error.includes('не подтвердило сохранение'),registrationBlock}));
           await client.cdp.evaluate('window.__codexSharedDesktop.forgetOperation('+JSON.stringify(operation.id)+')');
           throw Error(result.error);
         }

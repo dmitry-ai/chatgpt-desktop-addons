@@ -7,7 +7,7 @@ const row=(type,id,time=since+1000)=>JSON.stringify({timestamp:new Date(time).to
 const processInfo={Pid:123,StartTicks:'456',StartedAt:new Date(since).toISOString(),HasDebugPort:false,RestartRegistered:true};
 function fixture({process=processInfo,active=0,quiet=true}={}){
   const calls=[];
-  const recovery=new C1Recovery({probe:async()=>process,activity:async()=>({active,quiet}),recover:async p=>{calls.push(p);return 124;}});
+  const recovery=new C1Recovery({allowAutomaticRestart:true,probe:async()=>process,activity:async()=>({active,quiet}),recover:async p=>{calls.push(p);return 124;}});
   return {recovery,calls};
 }
 
@@ -40,12 +40,12 @@ test('closed C1, active answers and the final-message quiet period do not trigge
 });
 test('activity that starts during the recovery decision cancels the restart',async()=>{
   let reads=0,restarts=0;
-  const recovery=new C1Recovery({probe:async()=>processInfo,activity:async()=>({active:reads++?1:0,quiet:true}),recover:async()=>{restarts++;}});
+  const recovery=new C1Recovery({allowAutomaticRestart:true,probe:async()=>processInfo,activity:async()=>({active:reads++?1:0,quiet:true}),recover:async()=>{restarts++;}});
   await recovery.tick();assert.equal(restarts,0);
 });
 test('stopping the UI helper cancels an inspected but not yet requested restart',async()=>{
   let restarts=0;
-  const recovery=new C1Recovery({probe:async()=>processInfo,activity:async()=>{
+  const recovery=new C1Recovery({allowAutomaticRestart:true,probe:async()=>processInfo,activity:async()=>{
     recovery.stopped=true;return {active:0,quiet:true};
   },recover:async()=>{restarts++;}});
   await recovery.tick();assert.equal(restarts,0);
@@ -58,10 +58,17 @@ test('missing flag recovers only the inspected process once, then waits for actu
 test('unknown lifecycle state, native refusal or missing restart registration stop without a retry loop',async()=>{
   for(const failure of ['activity','recover','registration']){
     let attempts=0;
-    const recovery=new C1Recovery({probe:async()=>({...processInfo,RestartRegistered:failure!=='registration'}),
+    const recovery=new C1Recovery({allowAutomaticRestart:true,probe:async()=>({...processInfo,RestartRegistered:failure!=='registration'}),
       activity:async()=>{if(failure==='activity')throw Error('Unreadable lifecycle');return {active:0,quiet:true};},
       recover:async()=>{attempts++;throw Error('App refused shutdown');}});
     await recovery.tick(since);await recovery.tick(since+100000);
     assert.equal(attempts,failure==='recover'?1:0);assert.equal(recovery.status.state,'error');
   }
+});
+
+test('background recovery leaves a running C1 without the launch flag for manual relaunch',async()=>{
+  let calls=0;
+  const recovery=new C1Recovery({probe:async()=>processInfo,activity:async()=>{throw Error('Must not inspect sessions');},recover:async()=>calls++});
+  await recovery.tick(since);await recovery.tick(since+100000);
+  assert.equal(calls,0);assert.equal(recovery.status.state,'waiting-for-manual-launch');
 });

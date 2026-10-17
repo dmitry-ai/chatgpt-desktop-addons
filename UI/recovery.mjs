@@ -57,8 +57,8 @@ export class SessionActivity {
 }
 
 export class C1Recovery {
-  constructor({probe,recover,activity,log=async()=>{}}){
-    Object.assign(this,{probe,recover,activity,log});this.status={state:'initializing'};this.nextProbe=0;this.blocked=false;
+  constructor({probe,recover,activity,log=async()=>{},allowAutomaticRestart=false}){
+    Object.assign(this,{probe,recover,activity,log,allowAutomaticRestart});this.status={state:'initializing'};this.nextProbe=0;this.blocked=false;
   }
   connected(){this.blocked=false;this.status={state:'connected'};this.nextProbe=0;}
   async tick(now=Date.now()){
@@ -69,6 +69,7 @@ export class C1Recovery {
       if(this.stopped)return;
       if(!process){this.status={state:'closed'};this.nextProbe=now+15000;return;}
       if(process.HasDebugPort){this.status={state:'waiting-for-ui',pid:process.Pid};return;}
+      if(!this.allowAutomaticRestart){this.status={state:'waiting-for-manual-launch',pid:process.Pid};return;}
       if(!process.RestartRegistered)throw Error('C1 is not registered for graceful Windows restart');
       const activity=await this.activity(process.StartedAt,now);
       if(this.stopped)return;

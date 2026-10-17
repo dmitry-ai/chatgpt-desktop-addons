@@ -1,4 +1,6 @@
 import net from 'node:net';
+import {spawn} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 import {pipeName} from './paths.mjs';
 export function control(request) {
   return new Promise((resolve,reject)=>{
@@ -7,6 +9,22 @@ export function control(request) {
     socket.on('data',chunk=>{data+=chunk;if(!data.includes('\n'))return;socket.end();try{const response=JSON.parse(data.split('\n')[0]);response.ok?resolve(response.result):reject(Error(response.error))}catch(e){reject(e)}});
     socket.once('error',reject);
   });
+}
+
+// Start only the existing hidden helper when the pipe is absent. Codex itself
+// is never launched; offline profiles keep their durable catalogue queue.
+export async function controlWithHelper(request){
+  const absent=error=>['ENOENT','ECONNREFUSED'].includes(error.code);
+  try{return await control(request);}catch(error){if(process.platform!=='win32'||!absent(error))throw error;}
+  await new Promise((resolve,reject)=>{
+    const child=spawn('wscript.exe',[fileURLToPath(new URL('./ensure-ui.vbs',import.meta.url))],{windowsHide:true,stdio:'ignore'});
+    child.once('error',reject);child.once('exit',code=>code===0?resolve():reject(Error('UI helper launcher failed: '+code)));
+  });
+  const deadline=Date.now()+10000;
+  while(true){
+    try{return await control(request);}catch(error){if(!absent(error)||Date.now()>=deadline)throw error;}
+    await new Promise(resolve=>setTimeout(resolve,200));
+  }
 }
 if(process.argv[1]?.endsWith('manage.mjs')) {
   const command=process.argv[2]??'status';
