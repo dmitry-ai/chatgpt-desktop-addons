@@ -40,6 +40,17 @@ async function install(client){
     const valid=await client.cdp.evaluate('!!window.electronBridge?.getInitialSidebarBootstrap && window.codexWindowType === "electron"');
     if(!valid)return;
     await client.cdp.evaluate(renderer+'\ninstallCodexFolders('+JSON.stringify({state:state(client.profile),css,profile:client.profile.id})+');');
+    // Put the Escape guard ahead of the application's composer capture listener.
+    const escape=await client.cdp.call('Runtime.evaluate',{expression:`(() => {
+      const guard=window.__codexUi?.handleEscape;
+      if(!guard)throw Error('Escape guard is missing');
+      const listeners=(getEventListeners(window).keydown??[]).filter(listener=>listener.useCapture);
+      for(const {listener} of listeners)window.removeEventListener('keydown',listener,true);
+      window.addEventListener('keydown',guard,true);
+      for(const entry of listeners)if((entry.listener.__sentry_original__??entry.listener)!==guard)window.addEventListener('keydown',entry.listener,{capture:true,passive:entry.passive,once:entry.once});
+      return true;
+    })()`,includeCommandLineAPI:true,returnByValue:true});
+    if(escape.exceptionDetails)throw Error('Escape guard: '+escape.exceptionDetails.text);
     client.installed=true;client.lastState=null;
     await log('Installed '+client.profile.id+' target '+client.id);
   }catch(error){await log('Install '+client.profile.id+': '+error.message);}
