@@ -84,7 +84,7 @@ export function operationLedger(tasks, execute, changed) {
 }
 
 async function connectDesktop(findExport, findHost, makeLedger,findBus,requestConfig,ensureTrust) {
-  if (window.__codexSharedDesktop?.version === 7) return window.__codexSharedDesktop.info;
+  if (window.__codexSharedDesktop?.version === 8) return window.__codexSharedDesktop.info;
   let urls = [...new Set([
     ...performance.getEntriesByType('resource').map(e => e.name),
     ...[...document.scripts].map(e => e.src)
@@ -134,12 +134,15 @@ async function connectDesktop(findExport, findHost, makeLedger,findBus,requestCo
     cloudBacked:!!(p.chatGptBacking || p.chatGptBackingCreation || p.retiredChatGptBacking)
   }]));
   const events = [];
+  const creationListeners = new Set();
   const methods = new Set(['createLocal','editLocal','renameLocal','upsertLocal','removeLocal','setProjectOrder']);
   const wrappers = new Map();
   const proxy = new Proxy(projects, {get(target,key) {
     const original = target[key];
     if (!methods.has(key) || typeof original !== 'function') return original;
     if (!wrappers.has(key)) wrappers.set(key,async(...args) => {
+      // Capture the originating dialog before the native async operation starts.
+      const created = key === 'createLocal' ? [...creationListeners].map(listener => listener()).filter(Boolean) : [];
       let before; try { before = clean(await read()); } catch {}
       const result = await Reflect.apply(original,target,args);
       let after; try { after = clean(await read()); } catch {}
@@ -147,6 +150,9 @@ async function connectDesktop(findExport, findHost, makeLedger,findBus,requestCo
         events.push({id:crypto.randomUUID(),method:key,args,before,after});
         if (events.length > 100) { events.splice(0,events.length-100); events.push({method:'overflow'}); }
         try { window.__codexSharedChanged?.(JSON.stringify({event:'projects'})); } catch {}
+      }
+      if (result?.projectId) for (const listener of created) {
+        try { await listener(result.projectId); } catch (error) { console.warn('[codex-folders] Project placement:', error); }
       }
       return result;
     });
@@ -157,9 +163,10 @@ async function connectDesktop(findExport, findHost, makeLedger,findBus,requestCo
   host.projects = proxy;
   const info = {url, exportName:name, appVersion:window.electronBridge?.getSentryInitOptions?.().appVersion ?? null};
   const api = window.__codexSharedDesktop = {
-    version:7, info, read:async()=>clean(await read()),
+    version:8, info, read:async()=>clean(await read()),
+    onLocalProjectCreating(listener){creationListeners.add(listener);return()=>creationListeners.delete(listener)},
     drainEvents(){return events.splice(0)},
-    dispose(){if(host.projects===proxy)host.projects=projects;delete window.__codexSharedDesktop},
+    dispose(){creationListeners.clear();if(host.projects===proxy)host.projects=projects;delete window.__codexSharedDesktop},
     async upsert(item, expected, registration='sync',trust=null) {
       if(!['sync','restore'].includes(registration))throw Error('Неизвестный режим регистрации проекта');
       if (!item || typeof item.id !== 'string' || !item.id || typeof item.name !== 'string' ||

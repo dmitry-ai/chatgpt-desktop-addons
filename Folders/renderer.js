@@ -3,6 +3,7 @@ function installCodexFolders(options) {
   window.__codexUi?.dispose();
   const {state:initial,css,profile}=options;
   let state=initial,disposed=false,timer=null,dialog=null,toastTimer=null,renderedRevision=-1;
+  let creation=null,revealProjectId=null;
   const roots=new Map(),pending=new Map(),nativeNodes=new Set(),rowButtons=new Map(),toolbars=new Map(),fallbacks=new Map(),paginationStyles=new Map(),expansionRequests=new Map();
   const byId=()=>new Map(state.folders.map(f=>[f.id,f]));
   const collator=new Intl.Collator(undefined,{numeric:true,sensitivity:'base'});
@@ -55,15 +56,47 @@ function installCodexFolders(options) {
       if(projectKey)await request({type:'assign',projectKey,folderId:id});
     },'Создать');
   }
+  function stopCreation(context=creation){
+    if(!context)return;
+    context.observer?.disconnect();context.unsubscribe?.();clearTimeout(context.timeout);
+    if(creation===context)creation=null;
+  }
+  function createProject(folderId,list){
+    closeDialog();stopCreation();
+    const native=projectSection(list)?.querySelector('[data-app-action-sidebar-project-create]');
+    const service=window.__codexSharedDesktop;
+    if(!native||typeof service?.onLocalProjectCreating!=='function'){notify('Создание проектов ещё не подключено. Повторите через несколько секунд.');return;}
+    const context={folderId,dialog:null,previous:new Set(document.querySelectorAll('[role=dialog]'))};
+    creation=context;
+    const track=()=>{
+      if(context.dialog){if(!context.dialog.isConnected)stopCreation(context);return;}
+      context.dialog=[...document.querySelectorAll('[role=dialog]')].find(d=>!context.previous.has(d)&&d.querySelector('form'))??null;
+      if(context.dialog)clearTimeout(context.timeout);
+    };
+    context.observer=new MutationObserver(track);context.observer.observe(document.body,{childList:true,subtree:true});
+    context.unsubscribe=service.onLocalProjectCreating(()=>{
+      track();if(creation!==context||!context.dialog?.isConnected)return null;
+      return async projectId=>{
+        stopCreation(context);
+        try{
+          state=await request({type:'assign-created-project',projectId,folderId});
+          revealProjectId=projectId;schedule();
+        }catch(error){notify('Проект создан, но не удалось поместить его в папку: '+error.message);}
+      };
+    });
+    context.timeout=setTimeout(()=>stopCreation(context),15000);
+    native.click();track();
+  }
   function renameFolder(id) {const f=byId().get(id);if(f)openDialog('Переименовать папку',form=>inputField(form,'Имя',f.name),field=>request({type:'rename',id,name:field.value}))}
-  function folderMenu(id) {
+  function folderMenu(id,list) {
     const f=byId().get(id);if(!f)return;
     openDialog(f.name,form=>{
       const name=inputField(form,'Имя',f.name),parent=folderField(form,f.parentId,id);
       const actions=element('div','cui-dialog-footer');
+      const project=element('button','','Создать проект…');project.type='button';project.onclick=()=>createProject(id,list);
       const add=element('button','','Подпапка');add.type='button';add.onclick=()=>createFolder(id);
       const remove=element('button','','Удалить папку');remove.type='button';remove.onclick=()=>removeFolder(id);
-      actions.append(add,remove);form.append(actions);return {name,parent};
+      actions.append(project,add,remove);form.append(actions);return {name,parent};
     },async fields=>{
       // A combined operation avoids partial rename/move results.
       await request({type:'edit',id,name:fields.name.value,parentId:fields.parent.value||null});
@@ -123,7 +156,7 @@ function installCodexFolders(options) {
     node.addEventListener('dragleave',event=>{if(!node.contains(event.relatedTarget))node.classList.remove('cui-drop')});
     node.addEventListener('drop',event=>{node.classList.remove('cui-drop');const data=dragData(event);if(!data)return;event.preventDefault();event.stopPropagation();act(data.kind==='folder'?{type:'move',id:data.id,parentId}:{type:'assign',projectKey:data.key,folderId:parentId})});
   }
-  function folderRow(folder,depth,order) {
+  function folderRow(folder,depth,order,list) {
     const row=element('div','cui-folder');row.dataset.cuiFolder=folder.id;row.style.setProperty('--cui-depth',depth);row.style.setProperty('--cui-order',order);
     const collapsed=state.collapsedFolderIds.includes(folder.id);
     const toggle=button(pathOf(folder.id),'',()=>act({type:'collapse',id:folder.id,collapsed:!state.collapsedFolderIds.includes(folder.id)}),'cui-folder-toggle');
@@ -137,9 +170,8 @@ function installCodexFolders(options) {
       else if(event.key==='Delete'){event.preventDefault();removeFolder(folder.id)}
       else if(event.key==='ArrowLeft'||event.key==='ArrowRight'){event.preventDefault();act({type:'collapse',id:folder.id,collapsed:event.key==='ArrowLeft'})}
     };
-    const actions=element('span','cui-folder-actions');actions.append(button('Создать подпапку','+',()=>createFolder(folder.id),'cui-icon-button'),button('Действия с папкой','⋯',()=>folderMenu(folder.id),'cui-icon-button'));
-    row.append(toggle,actions);row.draggable=true;row.ondragstart=e=>{e.stopPropagation();e.dataTransfer.setData('application/x-codex-folder',JSON.stringify({kind:'folder',id:folder.id}));e.dataTransfer.effectAllowed='move'};
-    row.oncontextmenu=e=>{e.preventDefault();e.stopPropagation();folderMenu(folder.id)};dropTarget(row,folder.id);return row;
+    row.append(toggle);row.draggable=true;row.ondragstart=e=>{e.stopPropagation();e.dataTransfer.setData('application/x-codex-folder',JSON.stringify({kind:'folder',id:folder.id}));e.dataTransfer.effectAllowed='move'};
+    row.oncontextmenu=e=>{e.preventDefault();e.stopPropagation();folderMenu(folder.id,list)};dropTarget(row,folder.id);return row;
   }
   function nativeProject(row,list) {
     let outer=row;while(outer.parentElement&&outer.parentElement!==list)outer=outer.parentElement;
@@ -252,7 +284,7 @@ function installCodexFolders(options) {
         }
         function visit(parentId,depth,hidden) {
           for(const folder of sortedFolders(parentId)) {
-            const f=folderRow(folder,depth,++order);f.toggleAttribute('data-cui-hidden',hidden);fragment.append(f);
+            const f=folderRow(folder,depth,++order,list);f.toggleAttribute('data-cui-hidden',hidden);fragment.append(f);
             visit(folder.id,depth+1,hidden||state.collapsedFolderIds.includes(folder.id));
           }
           for(const item of items.filter(i=>(state.projectFolderMap[i.key]??null)===parentId).sort((a,b)=>{const ar=projectRanks.get(a.key),br=projectRanks.get(b.key);return ar!==undefined&&br!==undefined?ar-br:parentId?collator.compare(a.label,b.label):0;}))place(item,depth,hidden);
@@ -267,6 +299,10 @@ function installCodexFolders(options) {
       for(const [section,list] of fallbacks)if(!activeSections.has(section)){list.remove();fallbacks.delete(section)}
       for(const list of expansionRequests.keys())if(!list.isConnected||!activeLists.has(list))expansionRequests.delete(list);
       if(focus)focusList?.querySelector('[data-cui-folder-toggle="'+CSS.escape(focus)+'"]')?.focus({preventScroll:true});
+      if(revealProjectId){
+        const row=document.querySelector('[data-app-action-sidebar-project-id="'+CSS.escape(revealProjectId)+'"]');
+        if(row?.closest('[data-cui-project]')&&!row.closest('[data-cui-hidden]')){row.scrollIntoView({block:'nearest'});revealProjectId=null;}
+      }
       renderedRevision=state.revision;
     } catch(error) {console.warn('[codex-folders]',error)}
     finally {if(!disposed)observer.observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['data-app-action-sidebar-project-collapsed','data-app-action-sidebar-project-label','data-app-action-sidebar-section-collapsed','data-app-shell-active-page','disabled','aria-disabled']})}
@@ -278,10 +314,10 @@ function installCodexFolders(options) {
   const api={version:1,profile,
     updateState(value){state=value;schedule()},
     resolve(id,result){const p=pending.get(id);if(!p)return;pending.delete(id);clearTimeout(p.timeout);result.ok?p.resolve(result.state):p.reject(Error(result.error))},
-    inspect(){return {profile,revision:state.revision,renderedRevision,folders:state.folders,projects:[...document.querySelectorAll('[data-cui-project]')].map(e=>({key:e.dataset.cuiProject,hidden:e.hasAttribute('data-cui-hidden'),depth:e.style.getPropertyValue('--cui-depth'),order:e.style.getPropertyValue('--cui-order')})),lists:roots.size,pagination:[...expansionRequests].map(([list,value])=>({requests:value.requests,controlPresent:value.control.isConnected,visibleProjects:list.querySelectorAll('[data-app-action-sidebar-project-row]').length}))}},
+    inspect(){return {profile,revision:state.revision,renderedRevision,creatingIn:creation?.folderId??null,folders:state.folders,projects:[...document.querySelectorAll('[data-cui-project]')].map(e=>({key:e.dataset.cuiProject,hidden:e.hasAttribute('data-cui-hidden'),depth:e.style.getPropertyValue('--cui-depth'),order:e.style.getPropertyValue('--cui-order')})),lists:roots.size,pagination:[...expansionRequests].map(([list,value])=>({requests:value.requests,controlPresent:value.control.isConnected,visibleProjects:list.querySelectorAll('[data-app-action-sidebar-project-row]').length}))}},
     // This local API is also used by regression checks and the CLI; it does not call Codex APIs.
     request,
-    dispose(){disposed=true;clearTimeout(timer);clearTimeout(toastTimer);observer.disconnect();closeDialog();style.remove();document.querySelector('.cui-toast')?.remove();for(const root of roots.values())root.remove();for(const bar of toolbars.values())bar.remove();for(const list of fallbacks.values())list.remove();for(const b of rowButtons.values())b.remove();for(const n of nativeNodes)restoreNative(n);for(const n of paginationStyles.keys())restorePagination(n);expansionRequests.clear();for(const p of pending.values()){clearTimeout(p.timeout);p.reject(Error('UI module disconnected'))}pending.clear();if(window.__codexUi===api)delete window.__codexUi}
+    dispose(){disposed=true;stopCreation();clearTimeout(timer);clearTimeout(toastTimer);observer.disconnect();closeDialog();style.remove();document.querySelector('.cui-toast')?.remove();for(const root of roots.values())root.remove();for(const bar of toolbars.values())bar.remove();for(const list of fallbacks.values())list.remove();for(const b of rowButtons.values())b.remove();for(const n of nativeNodes)restoreNative(n);for(const n of paginationStyles.keys())restorePagination(n);expansionRequests.clear();for(const p of pending.values()){clearTimeout(p.timeout);p.reject(Error('UI module disconnected'))}pending.clear();if(window.__codexUi===api)delete window.__codexUi}
   };
   window.__codexUi=api;
   if(document.body)reconcile();else document.addEventListener('DOMContentLoaded',reconcile,{once:true});

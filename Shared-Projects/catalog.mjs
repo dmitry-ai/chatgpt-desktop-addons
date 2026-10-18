@@ -236,6 +236,17 @@ export function folderOperation(state,profileId,operation){
   for(const p of Object.values(state.profiles))p.collapsedFolderIds=p.collapsedFolderIds.filter(id=>state.folders.some(f=>f.id===id));
 }
 
+// The native createLocal result supplies the exact ID; no name or DOM-order matching.
+export function assignCreatedProject(state,profileId,snapshot,projectId,folderId){
+  if(!state.profiles[profileId]||!state.folders.some(f=>f.id===folderId))throw Error('Папка уже удалена');
+  if(!snapshot[projectId]||!local(snapshot[projectId]))throw Error('Созданный местный проект не найден');
+  observeProjects(state,profileId,snapshot);
+  folderOperation(state,profileId,{type:'assign',projectKey:nativeKey(projectId),folderId});
+  const ancestors=new Set();let folder=state.folders.find(f=>f.id===folderId);
+  while(folder){ancestors.add(folder.id);folder=state.folders.find(f=>f.id===folder.parentId);}
+  state.profiles[profileId].collapsedFolderIds=state.profiles[profileId].collapsedFolderIds.filter(id=>!ancestors.has(id));
+}
+
 // Idempotent integration boundary for local project producers (for example Upwork).
 // The daemon owns this transaction; callers never edit catalog.json or profile files.
 export function selectRegistrationSources(state,availableProfiles){

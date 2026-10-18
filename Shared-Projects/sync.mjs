@@ -1,5 +1,5 @@
 import {connectScript} from './desktop.mjs';
-import {observeProjects,planOperation,acknowledge,markStarted,failOperation,resumeSync,projectState,folderOperation,pendingCount,ensureProject,registrationReceipt,selectRegistrationSources} from './catalog.mjs';
+import {observeProjects,planOperation,acknowledge,markStarted,failOperation,resumeSync,projectState,folderOperation,pendingCount,ensureProject,registrationReceipt,selectRegistrationSources,assignCreatedProject} from './catalog.mjs';
 import {TrustPolicy} from './trust.mjs';
 import {cleanupProject} from './cleanup.mjs';
 const allowedEvents=new Set(['createLocal','editLocal','renameLocal','upsertLocal','removeLocal','setProjectOrder']);
@@ -36,7 +36,12 @@ export class ProjectSynchronizer{
   registration(id,profileId){return {...registrationReceipt(this.store.state,id,profileId),accounts:this.status()};}
   cleanupProject(spec){return cleanupProject(this,spec);}
   async operation(profile,operation){
-    if(operation.type==='retry-sync'){
+    if(operation.type==='assign-created-project'){
+      const client=this.getClients().find(c=>c.profile.id===profile.id&&c.sharedReady&&!c.cdp.closed);
+      if(!client)throw Error('Приложение ещё не подключено');
+      const snapshot=await client.cdp.evaluate('window.__codexSharedDesktop.read()',20000);
+      await this.store.transact(s=>assignCreatedProject(s,profile.id,snapshot,operation.projectId,operation.folderId));
+    }else if(operation.type==='retry-sync'){
       await this.store.transact(resumeSync);
       for(const p of this.profiles){const h=this.health.get(p.id);if(h){delete h.manualRetry;delete h.error;delete h.retryAt;}for(const c of this.getClients().filter(c=>c.profile.id===p.id))c.sharedRetryAt=0;}
     }else await this.store.transact(s=>folderOperation(s,profile.id,operation));

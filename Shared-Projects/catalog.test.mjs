@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {CatalogStore,migrateSeeds,observeProjects,planOperation,acknowledge,markStarted,failOperation,resumeSync,folderOperation,projectState,pendingCount,resolveConflict,identity,rootKey,stateDirectory,ensureProject,registrationReceipt,selectRegistrationSources} from './catalog.mjs';
 import {findProjectServiceExport,findProjectHostImport,operationLedger} from './desktop.mjs';
+import {assignCreatedProject} from './catalog.mjs';
 const project=(id,name='Project',rootPaths=['C:\\work\\project'])=>({id,name,rootPaths});
 const folder=(id,name,parentId=null)=>({id,name,parentId});
 const folders=(list=[],map={},collapsed=[])=>({schemaVersion:1,revision:0,folders:list,projectFolderMap:map,collapsedFolderIds:collapsed});
@@ -11,6 +12,24 @@ const seed=(id,projects,tree=folders())=>({id,projects:Object.fromEntries(projec
 const pair=()=>migrateSeeds([seed('C1',[project('native-1')],folders([folder('folder-1','Work')],{},['folder-1'])),seed('C2',[project('native-2')],folders([folder('folder-2','Work')]))]);
 const snapshot=p=>Object.fromEntries(p.map(p=>[p.id,p]));
 const shared=s=>Object.keys(s.projects)[0];
+
+test('folder creation selects the exact native ID among equally named projects and opens ancestors only in its profile',()=>{
+ const s=pair();folderOperation(s,'C2',{type:'create',id:'child',name:'Child',parentId:'folder-1'});
+ folderOperation(s,'C2',{type:'collapse',id:'folder-1',collapsed:true});folderOperation(s,'C2',{type:'collapse',id:'child',collapsed:true});
+ assignCreatedProject(s,'C2',snapshot([project('native-2'),project('chosen','Same',['C:/chosen']),project('other','Same',['C:/other'])]),'chosen','child');
+ const projection=projectState(s,'C2');assert.equal(projection.projectFolderMap['local:project:chosen'],'child');
+ assert.equal(projection.projectFolderMap['local:project:other'],undefined);
+ assert.deepEqual(s.profiles.C2.collapsedFolderIds,[]);assert.deepEqual(s.profiles.C1.collapsedFolderIds,['folder-1']);
+ const id=Object.keys(s.projects).find(id=>s.profiles.C2.bindings[id].desktopId==='chosen');
+ assert.equal(projectState(s,'C1').projectFolderMap['local:project:'+s.profiles.C1.bindings[id].desktopId],'child');
+});
+test('removed folder or missing native result cannot change any catalogue data',()=>{
+ const s=pair(),before=structuredClone(s);
+ assert.throws(()=>assignCreatedProject(s,'C2',{},'missing','folder-1'),/не найден/);
+ assert.deepEqual(s,before);
+ assert.throws(()=>assignCreatedProject(s,'C2',snapshot([project('new')]),'new','removed'),/удалена/);
+ assert.deepEqual(s,before);
+});
 
 test('producer registration reuses identity, preserves names/IDs and assigns one common branch',()=>{
  const s=pair(),before=structuredClone(s.profiles),id=shared(s);
