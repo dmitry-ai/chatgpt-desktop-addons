@@ -24,6 +24,8 @@ public static class RecoveryNativeTests {
             first = Start(one); second = Start(two);
             if (!WindowsRestart.IsRegistered(first) || !WindowsRestart.IsRegistered(second))
                 throw new Exception("Fixture restart registration failed.");
+            if (!C1Runtime.HasVisibleMainWindow(first.Id))
+                throw new Exception("Visible fixture window was not detected by HasVisibleMainWindow.");
             WindowsRestart.Shutdown(first);
             if (!first.HasExited) throw new Exception("The registered fixture was not closed.");
             if (second.HasExited) throw new Exception("An unrelated process was closed.");
@@ -77,7 +79,7 @@ public static class RecoveryNativeTests {
         using (var ready = EventWaitHandle.OpenExisting(key + "-ready"))
         using (var quit = new EventWaitHandle(false, EventResetMode.ManualReset, key + "-quit"))
         using (var timer = new System.Windows.Forms.Timer())
-        using (var form = new BackgroundForm { Text = "Codex UI recovery test", ShowInTaskbar = false, Opacity = 0,
+        using (var form = new BackgroundForm { Text = "Codex UI recovery test", Width = 640, Height = 420, ShowInTaskbar = false, Opacity = 0,
             StartPosition = FormStartPosition.Manual, Left = SystemInformation.VirtualScreen.Right + 1000 }) {
             timer.Interval = 50;
             timer.Tick += (sender, e) => { if (quit.WaitOne(0)) form.Close(); };

@@ -76,6 +76,18 @@ test('background recovery leaves a running C1 without the launch flag for manual
   assert.equal(calls,0);assert.equal(recovery.status.state,'waiting-for-manual-launch');
 });
 
+test('closing C1 window to tray closes the hidden background process',async()=>{
+  const closed=[];
+  let current={...processInfo,HasVisibleWindow:true};
+  const recovery=new C1Recovery({probe:async()=>current,closeHidden:async p=>{closed.push(p.Pid);},activity:async()=>({active:0,quiet:true}),recover:async()=>{}});
+  await recovery.tick(since);
+  assert.deepEqual(closed,[]);
+  current={...processInfo,HasVisibleWindow:false};
+  await recovery.tick(since+3000);
+  assert.deepEqual(closed,[123]);
+  assert.equal(recovery.status.state,'closed');
+});
+
 const oldPackage='OpenAI.Codex_1.0.0.0_x64__2p2nqsd0c76g0';
 const newPackage='OpenAI.Codex_2.0.0.0_x64__2p2nqsd0c76g0';
 function updateFixture(){

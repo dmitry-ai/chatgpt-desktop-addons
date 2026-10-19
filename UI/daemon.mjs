@@ -13,12 +13,33 @@ const code=path.dirname(fileURLToPath(import.meta.url));
 const rendererFile=path.resolve(code,'../../Folders/code/renderer.js');
 const cssFile=path.resolve(code,'../../CSS/code/style.css');
 const logFile=path.join(code,'ui.log');
-const clients=new Map(),connecting=new Set(),watchers=[];
+const clients=new Map(),connecting=new Set(),watchers=[],closingHidden=new Set(),seenVisiblePort=new Set();
 const catalog=new CatalogStore();
 const recovery=createC1Recovery(profiles.find(p=>p.id==='C1').home,log);
 let shared=null,renderer='',css='',stopping=false,scanTimer=null,startupError=null;
 async function log(message){await fs.appendFile(logFile,new Date().toISOString()+' '+message+'\n').catch(()=>{});}
 async function assets(){[renderer,css]=await Promise.all([fs.readFile(rendererFile,'utf8'),fs.readFile(cssFile,'utf8')]);}
+async function checkWindowHidden(profile,immediate=false){
+  if(stopping||!recovery?.probeWindow)return;
+  if(immediate)await new Promise(r=>setTimeout(r,50));
+  if(stopping)return;
+  try{
+    const info=await recovery.probeWindow(profile.port);
+    if(!info?.Running)return;
+    const key=info.Pid+':'+info.StartTicks;
+    if(info.HasVisibleWindow){seenVisiblePort.add(key);return;}
+    if(!seenVisiblePort.has(key)&&!immediate&&Date.now()-Date.parse(info.StartedAt)<15000)return;
+    if(closingHidden.has(key))return;
+    closingHidden.add(key);
+    try{
+      await log(profile.id+' window closed to tray (PID '+info.Pid+'); quitting application');
+      const active=[...clients.values()].filter(c=>c.profile.id===profile.id&&!c.cdp.closed);
+      await Promise.allSettled(active.map(c=>c.cdp.evaluate("window.electronBridge?.sendMessageFromView({type:'quit-app'})")));
+      await new Promise(r=>setTimeout(r,1500));
+      if(!stopping)await recovery.closeHidden(info);
+    }finally{closingHidden.delete(key);seenVisiblePort.delete(key);}
+  }catch(error){await log('Close hidden '+profile.id+': '+error.message);}
+}
 function state(profile){
   if(shared)return shared.projection(profile);
   return {schemaVersion:1,revision:0,folders:[],projectFolderMap:{},collapsedFolderIds:[],sync:{shared:true,accounts:Object.fromEntries(profiles.map(p=>[p.id,{state:'paused',error:startupError??'Инициализация'}])),profiles:[],conflicts:[]}};
@@ -48,11 +69,20 @@ async function install(client){
       for(const {listener} of listeners)window.removeEventListener('keydown',listener,true);
       window.addEventListener('keydown',guard,true);
       for(const entry of listeners)if((entry.listener.__sentry_original__??entry.listener)!==guard)window.addEventListener('keydown',entry.listener,{capture:true,passive:entry.passive,once:entry.once});
-      return true;
+      if(!window.__codexCloseOnHideInstalled){
+        window.__codexCloseOnHideInstalled=true;
+        document.addEventListener('visibilitychange',()=>{
+          if(document.visibilityState==='hidden'&&typeof window.__codexUiHost==='function'){
+            window.__codexUiHost(JSON.stringify({id:'__window_hidden__',operation:{type:'window-hidden'}}));
+          }
+        });
+      }
+      return document.visibilityState;
     })()`,includeCommandLineAPI:true,returnByValue:true});
     if(escape.exceptionDetails)throw Error('Escape guard: '+escape.exceptionDetails.text);
     client.installed=true;client.lastState=null;
     await log('Installed '+client.profile.id+' target '+client.id);
+    if(escape.result?.value==='hidden')checkWindowHidden(client.profile,false);
   }catch(error){await log('Install '+client.profile.id+': '+error.message);}
   finally{client.installing=false;}
   shared?.wake(client.profile.id);
@@ -70,6 +100,7 @@ async function attach(profile,target){
       let request;
       try{
         request=JSON.parse(event.payload);
+        if(request?.operation?.type==='window-hidden'){checkWindowHidden(profile,true);return;}
         if(typeof request.id!=='string'||!request.operation)throw Error('Invalid UI request');
         const value=await operate(profile,request.operation);
         await cdp.evaluate('window.__codexUi?.resolve('+JSON.stringify(request.id)+','+JSON.stringify({ok:true,state:value})+')');

@@ -57,8 +57,8 @@ export class SessionActivity {
 }
 
 export class C1Recovery {
-  constructor({probe,recover,activity,log=async()=>{},allowAutomaticRestart=false}){
-    Object.assign(this,{probe,recover,activity,log,allowAutomaticRestart});this.status={state:'initializing'};this.nextProbe=0;this.blocked=false;
+  constructor({probe,recover,closeHidden,activity,log=async()=>{},allowAutomaticRestart=false}){
+    Object.assign(this,{probe,recover,closeHidden,activity,log,allowAutomaticRestart});this.status={state:'initializing'};this.nextProbe=0;this.blocked=false;this.seenVisible=new Set();
   }
   connected(){this.blocked=false;this.status={state:'connected'};this.nextProbe=0;}
   async tick(now=Date.now()){
@@ -67,7 +67,14 @@ export class C1Recovery {
     try{
       const process=await this.probe();
       if(this.stopped)return;
-      if(!process){this.status={state:'closed'};this.nextProbe=now+15000;return;}
+      if(!process){this.seenVisible.clear();this.status={state:'closed'};this.nextProbe=now+15000;return;}
+      const key=process.Pid+':'+process.StartTicks;
+      if(process.HasVisibleWindow!==false)this.seenVisible.add(key);
+      if(process.HasVisibleWindow===false&&this.closeHidden&&(this.seenVisible.has(key)||now-Date.parse(process.StartedAt)>=15000)){
+        this.seenVisible.delete(key);await this.closeHidden(process);
+        await this.log('Closed hidden C1 tray process PID '+process.Pid);
+        this.status={state:'closed',closedHiddenPid:process.Pid};return;
+      }
       if(process.HasDebugPort){this.status={state:'waiting-for-ui',pid:process.Pid};return;}
       if(!this.allowAutomaticRestart){this.status={state:'waiting-for-manual-launch',pid:process.Pid};return;}
       if(!process.RestartRegistered)throw Error('C1 is not registered for graceful Windows restart');
@@ -191,8 +198,13 @@ export class UpdateRecovery {
 // One private stdio worker; no new listener, scheduled task, registry entry or
 // on-disk build is needed. The C# package resolver is shared with the C2 launcher.
 class NativeRuntime {
-  async call(request){
-    if(this.pending)throw Error('C1 runtime request is already in progress');
+  call(request){
+    const run=()=>this.send(request);
+    const task=(this.queue??Promise.resolve()).then(run,run);
+    this.queue=task.catch(()=>{});
+    return task;
+  }
+  send(request){
     if(!this.child){
       const executable=path.join(process.env.WINDIR??'C:\\Windows','System32/WindowsPowerShell/v1.0/powershell.exe');
       this.child=spawn(executable,['-NoLogo','-NoProfile','-NonInteractive','-File',fileURLToPath(new URL('./c1-runtime.ps1',import.meta.url))],{windowsHide:true,stdio:['pipe','pipe','pipe']});
@@ -221,10 +233,11 @@ class NativeRuntime {
 export function createC1Recovery(home,log){
   if(process.platform!=='win32')return null;
   const runtime=new NativeRuntime(),activity=new SessionActivity(home);
+  const closeHidden=process=>runtime.call({command:'close-hidden',pid:process.Pid,startTicks:process.StartTicks});
   const recovery=new C1Recovery({
     probe:()=>runtime.call({command:'probe'}),
     recover:process=>runtime.call({command:'recover',pid:process.Pid,startTicks:process.StartTicks}),
-    activity:(startedAt,now)=>activity.read(startedAt,now),log,
+    closeHidden,activity:(startedAt,now)=>activity.read(startedAt,now),log,
   });
   const intents=new UpdateIntentLog(path.join(process.env.LOCALAPPDATA,'Codex','Logs'));
   const updates=new UpdateRecovery({
@@ -235,6 +248,8 @@ export function createC1Recovery(home,log){
     activity:(startedAt,now)=>activity.read(startedAt,now),intent:(process,now)=>intents.read(process,now),log,
   });
   recovery.updates=updates;
+  recovery.probeWindow=port=>runtime.call({command:'probe-window',port});
+  recovery.closeHidden=closeHidden;
   recovery.stop=()=>{recovery.stopped=true;updates.stopped=true;runtime.close();};
   return recovery;
 }

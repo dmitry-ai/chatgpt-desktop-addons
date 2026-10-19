@@ -72,6 +72,8 @@ try {
             $request = $line | ConvertFrom-Json
             switch ($request.command) {
                 'probe' { $result = [C1Runtime]::Probe() }
+                'probe-window' { $result = [C1Runtime]::ProbePortWindow([int]$request.port) }
+                'close-hidden' { $result = [C1Runtime]::CloseHiddenProcess([int]$request.pid, [string]$request.startTicks) }
                 'recover' { $result = [C1Runtime]::Recover([int]$request.pid, [string]$request.startTicks) }
                 'prepare-update' { $result = Prepare-CodexUpdate -OriginPackage ([string]$request.originPackage) }
                 'launch' { $result = [C1Runtime]::Launch($false) }

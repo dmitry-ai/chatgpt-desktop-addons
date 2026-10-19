@@ -67,7 +67,13 @@ public static class WindowsRestart {
 public sealed class C1ProcessInfo {
     public int Pid;
     public string StartTicks, StartedAt, Package;
-    public bool HasDebugPort, RestartRegistered;
+    public bool HasDebugPort, RestartRegistered, HasVisibleWindow;
+}
+
+public sealed class PortWindowInfo {
+    public int Pid;
+    public string StartTicks;
+    public bool Running, HasVisibleWindow;
 }
 
 public static class C1Runtime {
@@ -84,6 +90,13 @@ public static class C1Runtime {
         public IntPtr process, thread;
         public int pid, threadId;
     }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Rect {
+        public int Left, Top, Right, Bottom;
+        public int Width { get { return Right - Left; } }
+        public int Height { get { return Bottom - Top; } }
+    }
+    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetPackageFullName(IntPtr process, ref uint length, StringBuilder name);
     [DllImport("kernel32.dll")]
@@ -92,6 +105,22 @@ public static class C1Runtime {
     private static extern IntPtr GetThreadDesktop(uint threadId);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern bool GetUserObjectInformation(IntPtr obj, int index, StringBuilder info, int length, out int needed);
+    [DllImport("user32.dll", EntryPoint = "OpenDesktopW", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr OpenDesktop(string lpszDesktop, uint dwFlags, bool fInherit, uint dwDesiredAccess);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool CloseDesktop(IntPtr hDesktop);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool EnumDesktopWindows(IntPtr hDesktop, EnumWindowsProc lpEnumFunc, IntPtr lParam);
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(IntPtr hWnd);
+    [DllImport("user32.dll")]
+    private static extern bool IsIconic(IntPtr hWnd);
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool GetWindowRect(IntPtr hWnd, out Rect lpRect);
     [DllImport("kernel32.dll", EntryPoint = "CreateProcessW", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool CreateProcess(string executable, StringBuilder command, IntPtr processAttributes,
         IntPtr threadAttributes, bool inherit, uint flags, IntPtr environment, string directory,
@@ -102,15 +131,24 @@ public static class C1Runtime {
     private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
     [DllImport("kernel32.dll")]
     private static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
 
     public static int Launch(bool activateExisting) {
         CodexPackage package = CodexPackage.Resolve(null);
         using (Process existing = Find(package)) {
             if (existing != null) {
-                if (!HasPort(existing.Id)) throw new InvalidOperationException(
-                    "C1 is already open without its UI connection. Fully exit C1 once, then open the C1 shortcut.");
-                if (activateExisting) Activate();
-                return existing.Id;
+                if (!HasPort(existing.Id)) {
+                    if (!HasVisibleMainWindow(existing.Id)) {
+                        CloseHiddenProcess(existing.Id, existing.StartTime.ToUniversalTime().Ticks.ToString());
+                    } else {
+                        throw new InvalidOperationException(
+                            "C1 is already open without its UI connection. Fully exit C1 once, then open the C1 shortcut.");
+                    }
+                } else {
+                    if (activateExisting) Activate();
+                    return existing.Id;
+                }
             }
         }
         int pid = Activate();
@@ -182,6 +220,148 @@ public static class C1Runtime {
         }
         throw new InvalidOperationException("C1 exited during inspection.");
     }
+    public static bool HasVisibleMainWindow(int pid) {
+        IntPtr desktop = OpenDesktop("Default", 0, false, 0x00C1);
+        if (desktop == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot open the interactive desktop.");
+        try {
+            bool found = false;
+            EnumWindowsProc callback = (window, data) => {
+                if (found) return true;
+                uint windowPid;
+                GetWindowThreadProcessId(window, out windowPid);
+                if (windowPid != (uint)pid || !IsWindowVisible(window)) return true;
+                IntPtr owner = GetWindow(window, 4); // GW_OWNER
+                if (owner != IntPtr.Zero && IsWindowVisible(owner)) return true;
+                Rect rect;
+                if (GetWindowRect(window, out rect) &&
+                    (IsIconic(window) || (rect.Left <= -10000 && rect.Top <= -10000) || (rect.Width > 200 && rect.Height > 200))) {
+                    found = true;
+                }
+                return true;
+            };
+            if (!EnumDesktopWindows(desktop, callback, IntPtr.Zero))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot enumerate desktop windows.");
+            if (!found && !IsDefaultDesktop()) {
+                IntPtr currentDesktop = GetThreadDesktop(GetCurrentThreadId());
+                if (currentDesktop != IntPtr.Zero) EnumDesktopWindows(currentDesktop, callback, IntPtr.Zero);
+            }
+            return found;
+        } finally {
+            CloseDesktop(desktop);
+        }
+    }
+    private static Process FindByPort(int debugPort) {
+        Process found = null;
+        string pattern = @"(?:^|\s)--remote-debugging-port(?:=|\s+)" + debugPort + @"(?:\s|$)";
+        try {
+            using (var search = new ManagementObjectSearcher("SELECT ProcessId, CommandLine FROM Win32_Process WHERE CommandLine IS NOT NULL"))
+            using (var results = search.Get()) {
+                foreach (ManagementObject item in results) using (item) {
+                    string command = item["CommandLine"] as string ?? "";
+                    if (command.Contains("--type=") || !System.Text.RegularExpressions.Regex.IsMatch(command, pattern)) continue;
+                    Process candidate = null;
+                    try {
+                        candidate = Process.GetProcessById(Convert.ToInt32(item["ProcessId"]));
+                        IntPtr pinned = candidate.Handle;
+                        if (candidate.HasExited || !CodexPackage.Owns(candidate)) continue;
+                        if (found == null) { found = candidate; candidate = null; }
+                        else if (candidate.StartTime.ToUniversalTime() < found.StartTime.ToUniversalTime()) {
+                            found.Dispose(); found = candidate; candidate = null;
+                        }
+                    } catch (ArgumentException) {
+                    } catch (InvalidOperationException) {
+                        if (candidate == null || !candidate.HasExited) throw;
+                    } catch (Win32Exception) {
+                        if (candidate == null || !candidate.HasExited) throw;
+                    } finally { if (candidate != null) candidate.Dispose(); }
+                }
+            }
+            return found;
+        } catch { if (found != null) found.Dispose(); throw; }
+    }
+    public static PortWindowInfo ProbePortWindow(int debugPort) {
+        using (Process process = FindByPort(debugPort) ?? (debugPort == 9223 ? Find(CodexPackage.Resolve(null)) : null)) {
+            if (process == null || process.HasExited) return new PortWindowInfo { Running = false };
+            DateTime started = process.StartTime.ToUniversalTime();
+            return new PortWindowInfo {
+                Pid = process.Id, StartTicks = started.Ticks.ToString(),
+                Running = true, HasVisibleWindow = HasVisibleMainWindow(process.Id)
+            };
+        }
+    }
+    public static bool CloseHiddenProcess(int expectedPid, string expectedStartTicks) {
+        Process process = null;
+        try {
+            try { process = Process.GetProcessById(expectedPid); }
+            catch (ArgumentException) { return false; }
+            IntPtr pinned = process.Handle;
+            if (process.HasExited || !CodexPackage.Owns(process) ||
+                process.StartTime.ToUniversalTime().Ticks.ToString() != expectedStartTicks) return false;
+            if (HasVisibleMainWindow(process.Id)) return false;
+            if (WindowsRestart.IsRegistered(process)) {
+                try { WindowsRestart.Shutdown(process); return true; }
+                catch { if (process.HasExited || HasVisibleMainWindow(process.Id)) return process.HasExited; }
+            }
+            if (!process.HasExited && !HasVisibleMainWindow(process.Id)) {
+                StopOwnedTree(process);
+                return true;
+            }
+            return process.HasExited;
+        } finally {
+            if (process != null) process.Dispose();
+        }
+    }
+    private static void StopOwnedTree(Process root) {
+        if (root.HasExited) return;
+        var owned = new System.Collections.Generic.List<Process> { root };
+        var seen = new System.Collections.Generic.HashSet<int> { root.Id };
+        try {
+            for (int i = 0; i < owned.Count; i++) {
+                Process parent = owned[i];
+                if (parent.HasExited) continue;
+                using (var search = new ManagementObjectSearcher("SELECT ProcessId FROM Win32_Process WHERE ParentProcessId=" + parent.Id))
+                using (var results = search.Get()) {
+                    foreach (ManagementObject item in results) using (item) {
+                        int pid = Convert.ToInt32(item["ProcessId"]);
+                        if (seen.Contains(pid)) continue;
+                        Process child = null;
+                        try {
+                            child = Process.GetProcessById(pid);
+                            IntPtr pinned = child.Handle;
+                            if (child.HasExited || child.StartTime.ToUniversalTime() < parent.StartTime.ToUniversalTime()) continue;
+                            using (var current = new ManagementObject("Win32_Process.Handle='" + pid + "'")) {
+                                current.Get();
+                                if (Convert.ToInt32(current["ParentProcessId"]) != parent.Id) continue;
+                            }
+                            owned.Add(child);
+                            seen.Add(pid);
+                            child = null;
+                        } catch (ArgumentException) {
+                        } catch (InvalidOperationException) {
+                            if (child == null || !child.HasExited) throw;
+                        } catch (ManagementException ex) {
+                            if (child == null || !child.HasExited) throw new InvalidOperationException("Cannot verify child process parentage.", ex);
+                        } finally {
+                            if (child != null) child.Dispose();
+                        }
+                    }
+                }
+            }
+            for (int i = owned.Count - 1; i >= 0; i--) {
+                if (!owned[i].HasExited && !TerminateProcess(owned[i].Handle, 0)) {
+                    int error = Marshal.GetLastWin32Error();
+                    if (!owned[i].HasExited) throw new Win32Exception(error, "Cannot stop an owned Codex process.");
+                }
+            }
+            var wait = Stopwatch.StartNew();
+            foreach (Process process in owned) {
+                int remaining = Math.Max(0, 5000 - (int)wait.ElapsedMilliseconds);
+                if (!process.WaitForExit(remaining)) throw new TimeoutException("An owned Codex process did not exit after termination.");
+            }
+        } finally {
+            for (int i = 1; i < owned.Count; i++) owned[i].Dispose();
+        }
+    }
     public static C1ProcessInfo Probe() {
         CodexPackage package = CodexPackage.Resolve(null);
         using (Process process = Find(package)) {
@@ -192,7 +372,8 @@ public static class C1Runtime {
             int identityResult = GetPackageFullName(process.Handle, ref length, identity);
             if (identityResult != 0) throw new Win32Exception(identityResult, "Cannot read C1's running package identity.");
             return new C1ProcessInfo { Pid = process.Id, StartTicks = started.Ticks.ToString(), StartedAt = started.ToString("o"),
-                Package = identity.ToString(), HasDebugPort = HasPort(process.Id), RestartRegistered = WindowsRestart.IsRegistered(process) };
+                Package = identity.ToString(), HasDebugPort = HasPort(process.Id), RestartRegistered = WindowsRestart.IsRegistered(process),
+                HasVisibleWindow = HasVisibleMainWindow(process.Id) };
         }
     }
     public static int Recover(int expectedPid, string expectedStartTicks) {

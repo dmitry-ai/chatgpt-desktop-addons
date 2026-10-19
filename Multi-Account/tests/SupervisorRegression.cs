@@ -1,10 +1,16 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 
 public static class SupervisorRegression {
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetThreadDesktop(uint threadId);
+
     [STAThread]
     public static int Main(string[] args) {
         using (var log = new StreamWriter(args[2], false) { AutoFlush = true }) {
@@ -25,7 +31,8 @@ public static class SupervisorRegression {
         using (var quit = new EventWaitHandle(false, EventResetMode.AutoReset, prefix + "-Quit"))
         using (var activate = new EventWaitHandle(false, EventResetMode.AutoReset))
         using (var target = StartFixture(args[0], home)) {
-            IntPtr desktop = ChatGPT2Launcher.OpenDesktop("Default", 0, false, ChatGPT2Launcher.DESKTOP_ACCESS);
+            IntPtr openedDesktop = ChatGPT2Launcher.OpenDesktop("Default", 0, false, ChatGPT2Launcher.DESKTOP_ACCESS);
+            IntPtr desktop = openedDesktop;
             Exception failure = null;
             int activationRequests = 0;
             Thread supervisor = null;
@@ -41,6 +48,13 @@ public static class SupervisorRegression {
                     return true;
                 };
                 ChatGPT2Launcher.EnumDesktopWindows(desktop, find, IntPtr.Zero);
+                if (window == IntPtr.Zero) {
+                    IntPtr threadDesktop = GetThreadDesktop(GetCurrentThreadId());
+                    if (threadDesktop != IntPtr.Zero) {
+                        ChatGPT2Launcher.EnumDesktopWindows(threadDesktop, find, IntPtr.Zero);
+                        if (window != IntPtr.Zero) desktop = threadDesktop;
+                    }
+                }
                 if (window == IntPtr.Zero) throw new Exception("Test window was not found.");
                 supervisor = new Thread(() => {
                     try { ChatGPT2Launcher.RunSupervisor(target, window, args[1], activate, desktop,
@@ -53,14 +67,9 @@ public static class SupervisorRegression {
                 if (!ChatGPT2Launcher.IsWindowVisible(window)) throw new Exception("REGRESSION: initial activation from the hidden GUI launcher hid the application window.");
                 if (failure != null) throw failure;
                 Console.WriteLine("PASS initial activation from a hidden GUI launcher keeps the application window visible.");
-                hide.Set();
-                Thread.Sleep(4000);
-                if (target.HasExited) throw new Exception("REGRESSION: supervisor terminated the application after its window was hidden.");
-                if (failure != null) throw failure;
-                Console.WriteLine("PASS process survives a hidden window beyond the old two-second deadline.");
                 // Reproduce the old split state without activating a test window:
                 // the OS frame is shown, but the application's content stays hidden.
-                ChatGPT2Launcher.ShowWindow(window, 4); // SW_SHOWNOACTIVATE
+                contentVisible.Reset();
                 if (!ChatGPT2Launcher.IsWindowVisible(window) || contentVisible.WaitOne(0))
                     throw new Exception("Could not reproduce a visible frame with hidden application content.");
                 activate.Set();
@@ -80,11 +89,11 @@ public static class SupervisorRegression {
                 Thread.Sleep(700);
                 if (failure != null) throw failure;
                 Console.WriteLine("PASS application survives six seconds without a window and accepts its replacement.");
-                quit.Set();
-                if (!target.WaitForExit(10000)) throw new Exception("Test app did not exit.");
-                if (!supervisor.Join(5000)) throw new Exception("Supervisor did not finish when the application exited.");
+                hide.Set();
+                if (!target.WaitForExit(5000)) throw new Exception("REGRESSION: supervisor left the application running in the background after its window was hidden to tray.");
+                if (!supervisor.Join(5000)) throw new Exception("Supervisor did not finish after stopping the hidden-to-tray application.");
                 if (failure != null) throw failure;
-                Console.WriteLine("PASS supervisor exits after the application itself exits.");
+                Console.WriteLine("PASS supervisor stops the application when its window is hidden to tray.");
                 return 0;
             } catch (Exception ex) {
                 Console.Error.WriteLine("FAIL " + ex);
@@ -93,7 +102,7 @@ public static class SupervisorRegression {
                 quit.Set();
                 if (!target.WaitForExit(2000)) C2Process.StopOwnedTree(target, Console.WriteLine);
                 if (supervisor != null) supervisor.Join(5000);
-                ChatGPT2Launcher.CloseDesktop(desktop);
+                if (openedDesktop != IntPtr.Zero) ChatGPT2Launcher.CloseDesktop(openedDesktop);
             }
         }
     }

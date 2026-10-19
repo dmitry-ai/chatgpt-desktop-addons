@@ -33,6 +33,9 @@ public class ChatGPT2Launcher {
     public static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
 
     [DllImport("user32.dll")]
+    public static extern bool IsWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
     public static extern bool IsWindowVisible(IntPtr hWnd);
 
     [DllImport("user32.dll")]
@@ -264,8 +267,8 @@ public class ChatGPT2Launcher {
         try {
             if (big == IntPtr.Zero || small == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot load the C2 icon.");
             ApplyWindowProperties(window, big, small, iconPath);
-            // A hidden, closed-to-tray or recreated window is not process termination.
-            // Only the application's actual exit ends this supervisor.
+            // A recreated window (destroyed old HWND) is not process termination,
+            // but hiding a live main window to the system tray (X button) exits C2.
             bool waitingForWindow = false;
             var styled = new HashSet<IntPtr> { window };
             int cycle = 0;
@@ -279,8 +282,33 @@ public class ChatGPT2Launcher {
                 }
                 var windows = FindVisibleWindowsForProcess(target.Id, desktop);
                 if (windows.Count == 0) {
+                    bool hiddenToTray = false;
+                    foreach (IntPtr hwnd in styled) {
+                        if (IsWindow(hwnd) && !IsWindowVisible(hwnd) && !IsIconic(hwnd)) {
+                            hiddenToTray = true;
+                            break;
+                        }
+                    }
+                    if (hiddenToTray) {
+                        var exitWait = Stopwatch.StartNew();
+                        while (!target.HasExited && exitWait.ElapsedMilliseconds < 1500) {
+                            if (FindVisibleWindowsForProcess(target.Id, desktop).Count > 0) {
+                                hiddenToTray = false;
+                                break;
+                            }
+                            Thread.Sleep(100);
+                        }
+                        if (hiddenToTray) {
+                            if (!target.HasExited) {
+                                Log("C2 window was closed to tray; stopping the C2 process tree.");
+                                C2Process.StopOwnedTree(target, Log);
+                            }
+                            break;
+                        }
+                        continue;
+                    }
                     if (!waitingForWindow) {
-                        Log("C2 has no visible main window; leaving the application running.");
+                        Log("C2 has no visible main window; waiting for replacement window.");
                         waitingForWindow = true;
                     }
                     continue;
@@ -343,7 +371,8 @@ public class ChatGPT2Launcher {
             GetWindowThreadProcessId(window, out windowPid);
             if (windowPid != (uint)pid || !IsWindowVisible(window)) return true;
             // Main top-level window, independent of the shell's window class name.
-            if (GetWindow(window, 4) != IntPtr.Zero) return true; // GW_OWNER
+            IntPtr owner = GetWindow(window, 4); // GW_OWNER
+            if (owner != IntPtr.Zero && IsWindowVisible(owner)) return true;
             RECT rect;
             if (GetWindowRect(window, out rect) &&
                 (IsIconic(window) || (rect.Left <= -10000 && rect.Top <= -10000) || (rect.Width > 200 && rect.Height > 200))) result.Add(window);
