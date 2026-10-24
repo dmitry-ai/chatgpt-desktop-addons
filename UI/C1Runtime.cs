@@ -161,11 +161,30 @@ public static class C1Runtime {
     }
     public static int[] PackageProcesses() {
         var result = new System.Collections.Generic.List<int>();
+        var seen = new System.Collections.Generic.HashSet<int>();
         foreach (Process process in Process.GetProcesses()) using (process) {
-            try { if (!process.HasExited && CodexPackage.Owns(process)) result.Add(process.Id); }
+            try {
+                if (!process.HasExited && CodexPackage.Owns(process)) {
+                    result.Add(process.Id);
+                    seen.Add(process.Id);
+                }
+            }
             catch (Win32Exception) { } // Other users' protected system processes.
             catch (InvalidOperationException) { } // Exited during the snapshot.
         }
+        try {
+            using (var searcher = new ManagementObjectSearcher(
+                "SELECT ProcessId FROM Win32_Process WHERE Name='ChatGPT.exe' OR Name='codex-windows-sandbox-service.exe'"))
+            using (var results = searcher.Get()) {
+                foreach (ManagementObject item in results) using (item) {
+                    int pid = Convert.ToInt32(item["ProcessId"]);
+                    if (!seen.Contains(pid)) {
+                        result.Add(pid);
+                        seen.Add(pid);
+                    }
+                }
+            }
+        } catch { }
         return result.ToArray();
     }
     private static string FirstArgument(string command) {

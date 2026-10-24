@@ -70,16 +70,23 @@ public sealed class CodexPackage {
 
     public static CodexPackage Resolve(Action<string> log) { return Select(Installed(), log); }
 
-    public static CodexPackage Select(IEnumerable<CodexPackage> candidates, Action<string> log) {
+    public static List<CodexPackage> SelectCandidates(IEnumerable<CodexPackage> candidates, Action<string> log) {
+        var list = new List<CodexPackage>();
         foreach (CodexPackage candidate in candidates.OrderByDescending(p => p.Version)) {
             try {
-                return ReadManifest(candidate);
+                list.Add(ReadManifest(candidate));
             } catch (IOException ex) {
                 if (log != null) log("Package unavailable: " + candidate.FullName + ": " + ex.Message);
             } catch (XmlException ex) {
                 if (log != null) log("Invalid package manifest: " + candidate.FullName + ": " + ex.Message);
             }
         }
+        return list;
+    }
+
+    public static CodexPackage Select(IEnumerable<CodexPackage> candidates, Action<string> log) {
+        var list = SelectCandidates(candidates, log);
+        if (list.Count > 0) return list[0];
         throw new FileNotFoundException("No registered Codex package has a valid desktop application and executable.");
     }
 

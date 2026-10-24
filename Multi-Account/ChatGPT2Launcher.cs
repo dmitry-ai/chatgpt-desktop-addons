@@ -230,6 +230,15 @@ public class ChatGPT2Launcher {
         throw new TimeoutException("The existing C2 supervisor is not responding.");
     }
 
+    private static bool IsTransientPackageError(int win32Error, int hresult) {
+        return win32Error == 2 || win32Error == 3 || win32Error == 5 ||
+               win32Error == 15600 || win32Error == 15618 || win32Error == 15631 ||
+               hresult == unchecked((int)0x80004005) ||
+               hresult == unchecked((int)0x80073D02) ||
+               hresult == unchecked((int)0x80073D0F) ||
+               hresult == unchecked((int)0x800700E9);
+    }
+
     private static CodexPackage RepairAlias(string alias) {
         CodexPackage package = CodexPackage.Resolve(Log);
         bool changed = AppExecLink.Ensure(alias, CodexPackage.Family, package.AppUserModelId, package.Executable);
@@ -239,20 +248,42 @@ public class ChatGPT2Launcher {
     }
 
     private static Process Launch(string alias, string profile) {
-        for (int attempt = 1; attempt <= 3; attempt++) {
-            try {
-                CodexPackage package = RepairAlias(alias);
-                return C2Process.Start(alias, profile, Path.GetDirectoryName(package.Executable), CDP_PORT_C2);
-            } catch (FileNotFoundException ex) {
-                if (attempt == 3) throw;
-                Log("Package may be updating; retry " + attempt + ": " + ex.Message);
-            } catch (Win32Exception ex) {
-                if (attempt == 3 || (ex.NativeErrorCode != 2 && ex.NativeErrorCode != 3 && ex.NativeErrorCode != 5)) throw;
-                Log("Package launch may be updating; retry " + attempt + ": " + ex.Message);
+        var candidates = CodexPackage.SelectCandidates(CodexPackage.Installed(), Log);
+        if (candidates.Count == 0)
+            throw new FileNotFoundException("No registered Codex package has a valid desktop application and executable.");
+
+        Exception lastException = null;
+        for (int i = 0; i < candidates.Count; i++) {
+            CodexPackage package = candidates[i];
+            bool isLastCandidate = (i == candidates.Count - 1);
+            for (int attempt = 1; attempt <= 3; attempt++) {
+                try {
+                    bool changed = AppExecLink.Ensure(alias, CodexPackage.Family, package.AppUserModelId, package.Executable);
+                    Log(string.Format("Execution alias {0}: {1}; app ID: {2}.",
+                        changed ? "repaired" : "verified", package.Executable, package.AppUserModelId));
+                    return C2Process.Start(alias, profile, Path.GetDirectoryName(package.Executable), CDP_PORT_C2);
+                } catch (FileNotFoundException ex) {
+                    lastException = ex;
+                    if (attempt == 3 || isLastCandidate) break;
+                    Log("Package candidate " + package.FullName + " not found; retry " + attempt + ": " + ex.Message);
+                    Thread.Sleep(1000);
+                } catch (Win32Exception ex) {
+                    lastException = ex;
+                    Log(string.Format("Package candidate {0} launch failed (Win32 {1} / HRESULT 0x{2:X}): {3}",
+                        package.FullName, ex.NativeErrorCode, ex.ErrorCode, ex.Message));
+                    if (attempt < 3 && IsTransientPackageError(ex.NativeErrorCode, ex.ErrorCode)) {
+                        Log("Package launch may be updating; retry " + attempt);
+                        Thread.Sleep(1500);
+                        continue;
+                    }
+                    if (!isLastCandidate) {
+                        Log("Falling back to next available installed package candidate: " + candidates[i + 1].FullName);
+                    }
+                    break;
+                }
             }
-            Thread.Sleep(1000);
         }
-        throw new InvalidOperationException("Unreachable launch state.");
+        throw lastException ?? new InvalidOperationException("Failed to launch any installed Codex package.");
     }
 
     private static void RequestApplicationWindow(string alias, string profile) {

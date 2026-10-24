@@ -36,11 +36,37 @@ function Prepare-CodexUpdate {
                 $_.GetGenericArguments().Count -eq 2 -and $_.GetParameters().Count -eq 1
             })
             if ($adapter.Count -ne 1) { throw 'Cannot await the Windows registration operation.' }
-            $operation = $manager.RegisterPackagesByFullNameAsync([string[]]@($candidate.PackageFullName),$options)
-            $task = $adapter[0].MakeGenericMethod($resultType,$progressType).Invoke($null,@($operation))
-            if (-not $task.Wait(30000)) { throw 'Windows registration has not completed within 30 seconds.' }
-            $result = $task.GetAwaiter().GetResult()
-            if ($result.ExtendedErrorCode -and $result.ExtendedErrorCode.HResult -ne 0) { throw $result.ExtendedErrorCode }
+
+            # Try synchronous registration first so UI launch flags are immediately bound.
+            # If resources or services are in use (0x80073D02 / 0x800700E9), fall back to
+            # deferred registration rather than crashing with an unhandled exception.
+            $regError = $null
+            try {
+                $operation = $manager.RegisterPackagesByFullNameAsync([string[]]@($candidate.PackageFullName),$options)
+                $task = $adapter[0].MakeGenericMethod($resultType,$progressType).Invoke($null,@($operation))
+                if ($task.Wait(30000)) {
+                    $result = $task.GetAwaiter().GetResult()
+                    if ($result.ExtendedErrorCode -and $result.ExtendedErrorCode.HResult -ne 0) {
+                        $regError = $result.ExtendedErrorCode
+                    }
+                } else {
+                    $regError = 'Windows registration has not completed within 30 seconds.'
+                }
+            } catch {
+                $regError = $_.Exception
+            }
+
+            if ($regError) {
+                try {
+                    $options.DeferRegistrationWhenPackagesAreInUse = $true
+                    $operation = $manager.RegisterPackagesByFullNameAsync([string[]]@($candidate.PackageFullName),$options)
+                    $task = $adapter[0].MakeGenericMethod($resultType,$progressType).Invoke($null,@($operation))
+                    if ($task.Wait(30000)) {
+                        $null = $task.GetAwaiter().GetResult()
+                    }
+                } catch { }
+            }
+
             $current = Get-AppxPackage -Name OpenAI.Codex | Where-Object { $_.PackageFamilyName -eq $family } |
                 Sort-Object Version -Descending | Select-Object -First 1
             $deferred = [version]$current.Version -lt [version]$candidate.Version
@@ -61,7 +87,9 @@ try {
         $existing = [C1Runtime]::Probe()
         if ($null -eq $existing) {
             $prepared = Prepare-CodexUpdate
-            if (-not $prepared.Ready) { throw 'A Codex update is waiting for other Codex processes to exit. Fully exit C1/C2, then open C1 again.' }
+            if (-not $prepared.Ready) {
+                Add-Content -LiteralPath (Join-Path $PSScriptRoot 'ui.log') -Value (([DateTime]::UtcNow.ToString('o'))+' Codex update is pending/deferred; launching C1.')
+            }
         }
         $pidStarted = [C1Runtime]::Launch($true)
         Add-Content -LiteralPath (Join-Path $PSScriptRoot 'ui.log') -Value (([DateTime]::UtcNow.ToString('o'))+' C1 shortcut launch verified, PID '+$pidStarted)
