@@ -67,3 +67,19 @@ test('synchronizer never publishes an unstarted source plan before accepting it'
   assert.equal(retargeted,false,'No externally visible unstarted plan may cross the transaction boundary');
   assert.deepEqual(dispatches,[{profile:'C2',source:'C2',started:true}]);
 });
+
+test('ensureProject awaits connected profile sync and report closes timed-out CDP clients',async()=>{
+  const state=migrateSeeds(['C1','C2'].map(id=>({id,projects:{}})));
+  const store={state,async transact(action){const next=structuredClone(this.state),result=await action(next);this.state=next;return {state:structuredClone(this.state),result:structuredClone(result)};}};
+  const native={};let closed=0;
+  const sandbox={window:{__codexSharedDesktop:{drainEvents:()=>[],read:()=>structuredClone(native),retainOperations:()=>{},forgetOperation:()=>{},startOperation:op=>{
+    native[op.desktopId]={id:op.desktopId,...op.value};return {state:'done',result:native[op.desktopId]};
+  }}}};
+  const profiles=['C1','C2'].map(id=>({id,home:'C:\\profiles\\'+id}));
+  const client={profile:profiles[1],installed:true,sharedReady:true,sharedInfo:{appVersion:'isolated'},cdp:{closed:false,close(){closed++;this.closed=true;},evaluate:async expression=>vm.runInNewContext(expression,sandbox)}};
+  const synchronizer=new ProjectSynchronizer({store,profiles,getClients:()=>[client],notify:async()=>{},log:async()=>{},trustPolicy:{prepare:async s=>s,operation:async()=>null}});
+  const receipt=await synchronizer.ensureProject('C2',{name:'Synced immediately',rootPaths:['C:\\daily\\two'],folderPath:['Upwork'],trustPolicy:'upwork-daily'});
+  assert.equal(receipt.complete,true);assert.equal(receipt.status,'registered');assert.equal(receipt.accounts.C2.state,'connected');
+  await synchronizer.report('C2',Error('Runtime.evaluate timed out'));await synchronizer.stop();
+  assert.equal(closed,1);assert.equal(client.cdp.closed,true);
+});

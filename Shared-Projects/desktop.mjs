@@ -33,7 +33,7 @@ export function findProjectHostImport(source) {
 }
 
 export function findMessageBusImport(source){
-  const names=[...new Set([...source.matchAll(/([\w$]+)\.subscribe\([`'"]shared-object-updated[`'"]/g)].map(m=>m[1]))];
+  const names=[...new Set([...source.matchAll(/([\w$]+)\.subscribe\([`'"](?:shared-object-updated|mcp-notification)[`'"]/g)].map(m=>m[1]))];
   if(names.length!==1||!source.includes(names[0]+'.dispatchMessage('))throw Error('Desktop message bus is ambiguous');
   const matches=[];
   for(const m of source.matchAll(/import\s*\{([^}]+)\}\s*from\s*(['"`])([^'"`]+)\2/g))for(const entry of m[1].split(',')){
@@ -103,10 +103,15 @@ async function connectDesktop(findExport, findHost, makeLedger,findBus,requestCo
   const response = await fetch(url);
   if (!response.ok) throw Error('Не удалось прочитать модуль Desktop App');
   const source = await response.text();
-  if (!source.includes('.upsertLocal(') || !source.includes('.editLocal(') || !source.includes('.setProjectOrder(')) {
+  let bundle = source;
+  if (!bundle.includes('.upsertLocal(') || !bundle.includes('.editLocal(') || !bundle.includes('.setProjectOrder(') || !/\.upsertLocal\([\s\S]{0,600}?,[`'"]restore[`'"]\)/.test(bundle)) {
+    const extra = [...new Set([...source.matchAll(/app-primary-[\w-]+\.js/g)].map(m => new URL('./'+m[0], url).href))];
+    for (const nextUrl of extra) { const res = await fetch(nextUrl); if (res.ok) bundle += '\n' + await res.text(); }
+  }
+  if (!bundle.includes('.upsertLocal(') || !bundle.includes('.editLocal(') || !bundle.includes('.setProjectOrder(')) {
     throw Error('Изменился контракт проектов Desktop App; синхронизация остановлена');
   }
-  if (!/\.upsertLocal\([\s\S]{0,600}?,[`'"]restore[`'"]\)/.test(source)) {
+  if (!/\.upsertLocal\([\s\S]{0,600}?,[`'"]restore[`'"]\)/.test(bundle)) {
     throw Error('Режим восстановления проектов Desktop App не подтверждён; синхронизация остановлена');
   }
   const name = findExport(source);
@@ -115,6 +120,9 @@ async function connectDesktop(findExport, findHost, makeLedger,findBus,requestCo
   const host = (await import(new URL(binding.url,url).href))[binding.name];
   if (!host?.projects) throw Error('DESKTOP_STARTING: сервис проектов ещё инициализируется');
   const projects = module[name]();
+  if (['getLocalProjects','createLocal','editLocal','renameLocal','upsertLocal','removeLocal','setProjectOrder'].some(m => typeof projects?.[m] !== 'function')) {
+    throw Error('Изменился контракт проектов Desktop App; синхронизация остановлена');
+  }
   const busBinding=findBus(source);
   const bus=(await import(new URL(busBinding.url,url).href))[busBinding.name];
   if(typeof bus?.subscribe!=='function'||typeof bus?.dispatchMessage!=='function')throw Error('Desktop config connection is unavailable');

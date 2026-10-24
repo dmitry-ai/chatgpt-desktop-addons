@@ -31,7 +31,15 @@ export class ProjectSynchronizer{
     await this.trustPolicy.prepare(spec);
     const availableProfiles=this.getClients().filter(c=>c.installed&&c.sharedReady&&!c.cdp.closed).map(c=>c.profile.id);
     const {result}=await this.store.transact(state=>ensureProject(state,profileId,spec,{availableProfiles}));
-    await this.notify();this.wakeAll();return result;
+    await this.notify();this.wakeAll();
+    if(!result.complete&&availableProfiles.length){
+      const source=result.registration_source??profileId;let timer;
+      await Promise.race([
+        (async()=>{await this.wake(source);if(source!==profileId&&availableProfiles.includes(profileId))await this.wake(profileId);})(),
+        new Promise(r=>{timer=setTimeout(r,5000);timer.unref?.();})
+      ]).catch(()=>{}).finally(()=>clearTimeout(timer));
+    }
+    return this.registration(result.shared_id,profileId);
   }
   registration(id,profileId){return {...registrationReceipt(this.store.state,id,profileId),accounts:this.status()};}
   cleanupProject(spec){return cleanupProject(this,spec);}
@@ -63,6 +71,9 @@ export class ProjectSynchronizer{
     const previous=this.health.get(profile)??{};
     const message=String(error?.message??error);
     if(previous.error!==message)await this.log('Shared projects '+profile+': '+message);
+    if(message.includes('Runtime.evaluate timed out')){
+      for(const c of this.getClients().filter(c=>c.profile.id===profile&&!c.cdp.closed))try{c.cdp.close();}catch{}
+    }
     this.health.set(profile,{...previous,state,error:message,retryAt:Date.now()+30000});
   }
   async collect(profile,client){

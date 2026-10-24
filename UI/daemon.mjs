@@ -130,7 +130,7 @@ async function scan(){
     }catch{} // Closed accounts reconnect automatically.
   }));
   const c1=[...clients.values()].some(c=>c.profile.id==='C1'&&c.installed&&!c.cdp.closed);
-  const c1Verified=[...clients.values()].some(c=>c.profile.id==='C1'&&c.installed&&c.sharedReady&&!c.cdp.closed);
+  const c1Verified=[...clients.values()].some(c=>c.profile.id==='C1'&&c.installed&&(c.sharedReady||['paused','unsupported'].includes(shared?.health?.get('C1')?.state))&&!c.cdp.closed);
   await recovery?.updates.tick(Date.now(),c1Verified);
   if(c1){
     if(recovery&&recovery.status.state!=='connected'){

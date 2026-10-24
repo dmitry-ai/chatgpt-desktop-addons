@@ -53,6 +53,8 @@ test('a lost config acknowledgement is safely recovered by the next exact read',
 test('native message discovery follows renamed imports and rejects ambiguity',()=>{
   const source='import{busExport as bus}from`./shared.js`;bus.subscribe(`shared-object-updated`,x=>x);bus.dispatchMessage(x,y)';
   assert.deepEqual(findMessageBusImport(source),{name:'busExport',url:'./shared.js'});
+  const splitSource='import{SIt as Ti}from"./app-shared.js";Ti.subscribe(`mcp-notification`,x=>x);Ti.dispatchMessage(x,y)';
+  assert.deepEqual(findMessageBusImport(splitSource),{name:'SIt',url:'./app-shared.js'});
   assert.throws(()=>findMessageBusImport(source+';other.subscribe(`shared-object-updated`,x=>x)'),/ambiguous/);
 });
 test('config requests correlate the exact local response and remove their subscription',async()=>{
