@@ -160,32 +160,7 @@ public static class C1Runtime {
         }
     }
     public static int[] PackageProcesses() {
-        var result = new System.Collections.Generic.List<int>();
-        var seen = new System.Collections.Generic.HashSet<int>();
-        foreach (Process process in Process.GetProcesses()) using (process) {
-            try {
-                if (!process.HasExited && CodexPackage.Owns(process)) {
-                    result.Add(process.Id);
-                    seen.Add(process.Id);
-                }
-            }
-            catch (Win32Exception) { } // Other users' protected system processes.
-            catch (InvalidOperationException) { } // Exited during the snapshot.
-        }
-        try {
-            using (var searcher = new ManagementObjectSearcher(
-                "SELECT ProcessId FROM Win32_Process WHERE Name='ChatGPT.exe' OR Name='codex-windows-sandbox-service.exe'"))
-            using (var results = searcher.Get()) {
-                foreach (ManagementObject item in results) using (item) {
-                    int pid = Convert.ToInt32(item["ProcessId"]);
-                    if (!seen.Contains(pid)) {
-                        result.Add(pid);
-                        seen.Add(pid);
-                    }
-                }
-            }
-        } catch { }
-        return result.ToArray();
+        return CodexPackage.RunningUiProcesses();
     }
     private static string FirstArgument(string command) {
         command = (command ?? "").TrimStart();
@@ -377,6 +352,8 @@ public static class C1Runtime {
                 int remaining = Math.Max(0, 5000 - (int)wait.ElapsedMilliseconds);
                 if (!process.WaitForExit(remaining)) throw new TimeoutException("An owned Codex process did not exit after termination.");
             }
+            var orphans = CodexPackage.FindOrphanProcesses(null, true);
+            if (orphans.Count > 0) CodexPackage.StopProcesses(orphans, null);
         } finally {
             for (int i = 1; i < owned.Count; i++) owned[i].Dispose();
         }
@@ -412,12 +389,23 @@ public static class C1Runtime {
             string.Equals(name.ToString(), "Default", StringComparison.OrdinalIgnoreCase);
     }
     public static int Activate() {
-        string appId = CodexPackage.Resolve(null).AppUserModelId;
+        CodexPackage pkg = CodexPackage.Resolve(null);
+        if (CodexPackage.NeedsRegistration(pkg.FullName)) {
+            CodexPackage.EnsureRegistered(pkg, null);
+            pkg = CodexPackage.Resolve(null);
+        }
+        string appId = pkg.AppUserModelId;
         if (!IsDefaultDesktop()) return ActivateOnDefaultDesktop(appId);
         var manager = (IApplicationActivationManager)new ApplicationActivationManager();
         try {
             uint pid;
             int result = manager.ActivateApplication(appId, "--remote-debugging-port=9223", 2, out pid);
+            if (result < 0 && (result == unchecked((int)0x80073D02) || result == unchecked((int)0x80073D0F))) {
+                if (CodexPackage.EnsureRegistered(pkg, null)) {
+                    pkg = CodexPackage.Resolve(null);
+                    result = manager.ActivateApplication(pkg.AppUserModelId, "--remote-debugging-port=9223", 2, out pid);
+                }
+            }
             if (result < 0) Marshal.ThrowExceptionForHR(result);
             return checked((int)pid);
         } finally { Marshal.ReleaseComObject(manager); }

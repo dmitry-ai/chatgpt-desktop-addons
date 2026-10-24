@@ -15,61 +15,22 @@ function Prepare-CodexUpdate {
     $candidate = $available | Where-Object {
         $_.PackageFamilyName -eq $family -and $_.Status -eq 'Ok' -and [version]$_.Version -gt [version]$current.Version
     } | Sort-Object Version -Descending | Select-Object -First 1
+    if (-not $candidate -and [CodexPackage]::NeedsRegistration($current.PackageFullName)) {
+        $candidate = $current
+    }
     $inUse = @([C1Runtime]::PackageProcesses())
     $deferred = $false
     if ($candidate) {
-        # Never force another profile or an active app to close. Register only
-        # when no package processes are running so registration finishes synchronously
-        # before activation and never drops launch arguments.
+        # Never force another profile or an active UI window to close. When no
+        # interactive Codex UI process is open, clean up any orphaned container
+        # descendants and complete registration synchronously.
         if ($inUse.Count -eq 0) {
-            Add-Type -AssemblyName System.Runtime.WindowsRuntime
-            $manager = New-Object Windows.Management.Deployment.PackageManager
-            $options = New-Object Windows.Management.Deployment.RegisterPackageOptions
-            $options.DeferRegistrationWhenPackagesAreInUse = $false
-            $options.ForceAppShutdown = $false
-            $options.ForceTargetAppShutdown = $false
-            $options.DeveloperMode = $false
-            $resultType = [Windows.Management.Deployment.DeploymentResult,Windows.Management.Deployment,ContentType=WindowsRuntime]
-            $progressType = [Windows.Management.Deployment.DeploymentProgress,Windows.Management.Deployment,ContentType=WindowsRuntime]
-            $adapter = @([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
-                $_.Name -eq 'AsTask' -and $_.IsGenericMethodDefinition -and
-                $_.GetGenericArguments().Count -eq 2 -and $_.GetParameters().Count -eq 1
-            })
-            if ($adapter.Count -ne 1) { throw 'Cannot await the Windows registration operation.' }
-
-            # Try synchronous registration first so UI launch flags are immediately bound.
-            # If resources or services are in use (0x80073D02 / 0x800700E9), fall back to
-            # deferred registration rather than crashing with an unhandled exception.
-            $regError = $null
-            try {
-                $operation = $manager.RegisterPackagesByFullNameAsync([string[]]@($candidate.PackageFullName),$options)
-                $task = $adapter[0].MakeGenericMethod($resultType,$progressType).Invoke($null,@($operation))
-                if ($task.Wait(30000)) {
-                    $result = $task.GetAwaiter().GetResult()
-                    if ($result.ExtendedErrorCode -and $result.ExtendedErrorCode.HResult -ne 0) {
-                        $regError = $result.ExtendedErrorCode
-                    }
-                } else {
-                    $regError = 'Windows registration has not completed within 30 seconds.'
-                }
-            } catch {
-                $regError = $_.Exception
-            }
-
-            if ($regError) {
-                try {
-                    $options.DeferRegistrationWhenPackagesAreInUse = $true
-                    $operation = $manager.RegisterPackagesByFullNameAsync([string[]]@($candidate.PackageFullName),$options)
-                    $task = $adapter[0].MakeGenericMethod($resultType,$progressType).Invoke($null,@($operation))
-                    if ($task.Wait(30000)) {
-                        $null = $task.GetAwaiter().GetResult()
-                    }
-                } catch { }
-            }
-
+            [CodexPackage]::StopOrphanContainerProcesses($null)
+            $manifest = Join-Path $candidate.InstallLocation 'AppxManifest.xml'
+            Add-AppxPackage -Register $manifest -DisableDevelopmentMode -ForceApplicationShutdown -ForceUpdateFromAnyVersion
             $current = Get-AppxPackage -Name OpenAI.Codex | Where-Object { $_.PackageFamilyName -eq $family } |
                 Sort-Object Version -Descending | Select-Object -First 1
-            $deferred = [version]$current.Version -lt [version]$candidate.Version
+            $deferred = ([version]$current.Version -lt [version]$candidate.Version) -or [CodexPackage]::NeedsRegistration($current.PackageFullName)
         } else { $deferred = $true }
     }
     $newer = $false

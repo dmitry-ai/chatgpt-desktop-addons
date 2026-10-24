@@ -135,6 +135,9 @@ public static class C2Process {
     public static void StopOwnedTree(Process root, Action<string> log) {
         // Hold actual process handles and validate parentage; never taskkill by port/PID.
         if (root.HasExited) return;
+        string c2Profile = null;
+        var rootEnv = CodexPackage.ReadProcessEnvironment(root.Id);
+        rootEnv.TryGetValue("CODEX_ELECTRON_USER_DATA_PATH", out c2Profile);
         var owned = new List<Process> { root };
         var seen = new HashSet<int> { root.Id };
         try {
@@ -182,6 +185,10 @@ public static class C2Process {
             foreach (Process process in owned) {
                 int remaining = Math.Max(0, 5000 - (int)wait.ElapsedMilliseconds);
                 if (!process.WaitForExit(remaining)) throw new TimeoutException("An owned C2 process did not exit after termination.");
+            }
+            if (!string.IsNullOrEmpty(c2Profile)) {
+                var orphans = CodexPackage.FindOrphanProcesses(c2Profile, false);
+                if (orphans.Count > 0) CodexPackage.StopProcesses(orphans, log);
             }
             if (log != null) log("Stopped the verified C2 process tree.");
         } finally {

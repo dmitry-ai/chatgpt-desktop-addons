@@ -232,7 +232,7 @@ public class ChatGPT2Launcher {
 
     private static bool IsTransientPackageError(int win32Error, int hresult) {
         return win32Error == 2 || win32Error == 3 || win32Error == 5 ||
-               win32Error == 15600 || win32Error == 15618 || win32Error == 15631 ||
+               win32Error == 15600 || win32Error == 15602 || win32Error == 15618 || win32Error == 15631 ||
                hresult == unchecked((int)0x80004005) ||
                hresult == unchecked((int)0x80073D02) ||
                hresult == unchecked((int)0x80073D0F) ||
@@ -241,6 +241,9 @@ public class ChatGPT2Launcher {
 
     private static CodexPackage RepairAlias(string alias) {
         CodexPackage package = CodexPackage.Resolve(Log);
+        if (CodexPackage.NeedsRegistration(package.FullName)) {
+            CodexPackage.EnsureRegistered(package, Log);
+        }
         bool changed = AppExecLink.Ensure(alias, CodexPackage.Family, package.AppUserModelId, package.Executable);
         Log(string.Format("Execution alias {0}: {1}; app ID: {2}.",
             changed ? "repaired" : "verified", package.Executable, package.AppUserModelId));
@@ -258,6 +261,9 @@ public class ChatGPT2Launcher {
             bool isLastCandidate = (i == candidates.Count - 1);
             for (int attempt = 1; attempt <= 3; attempt++) {
                 try {
+                    if (CodexPackage.NeedsRegistration(package.FullName)) {
+                        CodexPackage.EnsureRegistered(package, Log);
+                    }
                     bool changed = AppExecLink.Ensure(alias, CodexPackage.Family, package.AppUserModelId, package.Executable);
                     Log(string.Format("Execution alias {0}: {1}; app ID: {2}.",
                         changed ? "repaired" : "verified", package.Executable, package.AppUserModelId));
@@ -272,6 +278,7 @@ public class ChatGPT2Launcher {
                     Log(string.Format("Package candidate {0} launch failed (Win32 {1} / HRESULT 0x{2:X}): {3}",
                         package.FullName, ex.NativeErrorCode, ex.ErrorCode, ex.Message));
                     if (attempt < 3 && IsTransientPackageError(ex.NativeErrorCode, ex.ErrorCode)) {
+                        CodexPackage.EnsureRegistered(package, Log);
                         Log("Package launch may be updating; retry " + attempt);
                         Thread.Sleep(1500);
                         continue;
