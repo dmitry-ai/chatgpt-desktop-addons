@@ -76,7 +76,8 @@ test('CDP installer puts Escape guard before existing capture handlers and retai
   const native=()=>{},guard=()=>{},bubble=()=>{};
   let listeners=[{listener:native,useCapture:true,once:true,passive:false},{listener:guard,useCapture:true},{listener:bubble,useCapture:false}];
   const window={__codexUi:{handleEscape:guard},removeEventListener(type,listener){listeners=listeners.filter(entry=>entry.listener!==listener);},addEventListener(type,listener,options){listeners.push({listener,useCapture:options===true||options.capture,once:options.once,passive:options.passive});}};
-  vm.runInNewContext(script,{window,getEventListeners:()=>({keydown:listeners})});
+  const document={addEventListener(){}};
+  vm.runInNewContext(script,{window,document,getEventListeners:()=>({keydown:listeners})});
   assert.deepEqual(listeners.filter(entry=>entry.useCapture).map(entry=>entry.listener),[guard,native]);
   assert.equal(listeners.find(entry=>entry.listener===native).once,true);
   assert.equal(listeners.find(entry=>entry.listener===bubble).useCapture,false);

@@ -1,0 +1,4 @@
+*.exe
+*.log
+node-path.txt
+state/
