@@ -1,6 +1,6 @@
-$ErrorActionPreference='Stop'
-$toolsRoot=Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
-$accountCode=Join-Path $toolsRoot 'Multi-Account\code'
+﻿$ErrorActionPreference='Stop'
+$toolsRoot=Split-Path $PSScriptRoot -Parent
+$accountCode=Join-Path $toolsRoot 'Multi-Account'
 $backupRoot=Join-Path $PSScriptRoot 'state\installation'
 $manifestPath=Join-Path $backupRoot 'manifest.json'
 $desktopPath=[Environment]::GetFolderPath('Desktop')
@@ -32,8 +32,8 @@ foreach($file in $previousManifest.files) {
 $vbsHook=@'
 ' Codex UI runtime modules
 Set CodexUIFSO = CreateObject("Scripting.FileSystemObject")
-CodexUIToolsDir = CodexUIFSO.GetParentFolderName(CodexUIFSO.GetParentFolderName(CodexUIFSO.GetParentFolderName(WScript.ScriptFullName)))
-WshShell.Run """wscript.exe"" """ & CodexUIToolsDir & "\UI\code\ensure-ui.vbs""", 0, False
+CodexUIToolsDir = CodexUIFSO.GetParentFolderName(CodexUIFSO.GetParentFolderName(WScript.ScriptFullName))
+WshShell.Run """wscript.exe"" """ & CodexUIToolsDir & "\UI\ensure-ui.vbs""", 0, False
 ' End Codex UI runtime modules
 '@
 foreach($name in @('launch_chatgpt.vbs','launch_chatgpt2.vbs')) {
@@ -44,7 +44,7 @@ foreach($name in @('launch_chatgpt.vbs','launch_chatgpt2.vbs')) {
     if (-not $match.Success) {throw "Не найдена точка подключения в $name"}
     $text=$text.Insert($match.Index+$match.Length,"`r`n"+$vbsHook)
     if ($name -eq 'launch_chatgpt.vbs') {
-      $c1Launch = "CodexPowerShell = WshShell.ExpandEnvironmentStrings(""%WINDIR%"") & ""\System32\WindowsPowerShell\v1.0\powershell.exe""`r`nWshShell.Run """""""" & CodexPowerShell & """""" -NoLogo -NoProfile -NonInteractive -File """""" & CodexUIToolsDir & ""\UI\code\c1-runtime.ps1"""" -Launch"", 0, False"
+      $c1Launch = "CodexPowerShell = WshShell.ExpandEnvironmentStrings(""%WINDIR%"") & ""\System32\WindowsPowerShell\v1.0\powershell.exe""`r`nWshShell.Run """""""" & CodexPowerShell & """""" -NoLogo -NoProfile -NonInteractive -File """""" & CodexUIToolsDir & ""\UI\c1-runtime.ps1"""" -Launch"", 0, False"
       $text = [regex]::Replace($text, '(?m)^WshShell\.Run "cmd\.exe /c start .*$', $c1Launch)
     }
     [IO.File]::WriteAllText($file,$text,[Text.UTF8Encoding]::new($false))
@@ -55,7 +55,7 @@ $psText=[IO.File]::ReadAllText($psFile)
 if (-not $psText.Contains('# Codex UI runtime modules')) {
   $psHook=@'
 # Codex UI runtime modules
-$uiEntry=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'UI\code\ensure-ui.vbs'
+$uiEntry=Join-Path (Split-Path $PSScriptRoot -Parent) 'UI\ensure-ui.vbs'
 Start-Process -FilePath 'wscript.exe' -ArgumentList ('"'+$uiEntry+'"') -WindowStyle Hidden
 # End Codex UI runtime modules
 '@
@@ -81,5 +81,5 @@ for($attempt=0;$attempt -lt 10;$attempt++) {
   $uiStatus=& $nodePath (Join-Path $PSScriptRoot 'manage.mjs') status 2>$null
   if($LASTEXITCODE -eq 0) {break}
 }
-if($LASTEXITCODE -ne 0) {throw 'Помощник UI не запустился. Проверьте UI/code/ui.log.'}
+if($LASTEXITCODE -ne 0) {throw 'Помощник UI не запустился. Проверьте UI/ui.log.'}
 Write-Output 'Помощник Folders/CSS запущен. C1, потерявший UI-порт после обновления, будет штатно перезапущен после завершения активных ответов.'

@@ -1,5 +1,5 @@
 # Codex UI runtime modules
-$uiEntry=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'UI\code\ensure-ui.vbs'
+$uiEntry=Join-Path (Split-Path $PSScriptRoot -Parent) 'UI\ensure-ui.vbs'
 Start-Process -FilePath 'wscript.exe' -ArgumentList ('"'+$uiEntry+'"') -WindowStyle Hidden
 # End Codex UI runtime modules
 $ErrorActionPreference = 'Stop'

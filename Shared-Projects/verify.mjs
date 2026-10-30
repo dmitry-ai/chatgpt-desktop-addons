@@ -3,9 +3,9 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {DatabaseSync} from 'node:sqlite';
-import {CDP} from '../../UI/code/cdp.mjs';
-import {profiles} from '../../UI/code/paths.mjs';
-import {control} from '../../UI/code/manage.mjs';
+import {CDP} from '../UI/cdp.mjs';
+import {profiles} from '../UI/paths.mjs';
+import {control} from '../UI/manage.mjs';
 import {stateDirectory} from './catalog.mjs';
 
 const exercise=process.argv.includes('--exercise');

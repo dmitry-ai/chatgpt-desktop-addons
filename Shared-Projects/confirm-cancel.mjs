@@ -2,8 +2,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
-import {CDP} from '../../UI/code/cdp.mjs';
-import {profiles} from '../../UI/code/paths.mjs';
+import {CDP} from '../UI/cdp.mjs';
+import {profiles} from '../UI/paths.mjs';
 import {stateDirectory} from './catalog.mjs';
 const command=process.argv[2]??'status';
 if(!['start','status','forget'].includes(command))throw Error('Expected start, status or forget');

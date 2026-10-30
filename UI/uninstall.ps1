@@ -1,4 +1,4 @@
-$ErrorActionPreference='Stop'
+﻿$ErrorActionPreference='Stop'
 $manifestPath=Join-Path $PSScriptRoot 'state\installation\manifest.json'
 if (-not (Test-Path -LiteralPath $manifestPath)) {throw 'Резервная копия установки не найдена.'}
 $manifest=Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json

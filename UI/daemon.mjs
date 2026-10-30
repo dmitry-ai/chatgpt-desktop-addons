@@ -6,12 +6,12 @@ import {fileURLToPath} from 'node:url';
 import {CDP} from './cdp.mjs';
 import {profiles,pipeName} from './paths.mjs';
 import {createC1Recovery} from './recovery.mjs';
-import {CatalogStore,catalogFile} from '../../Shared-Projects/code/catalog.mjs';
-import {ProjectSynchronizer} from '../../Shared-Projects/code/sync.mjs';
+import {CatalogStore,catalogFile} from '../Shared-Projects/catalog.mjs';
+import {ProjectSynchronizer} from '../Shared-Projects/sync.mjs';
 
 const code=path.dirname(fileURLToPath(import.meta.url));
-const rendererFile=path.resolve(code,'../../Folders/code/renderer.js');
-const cssFile=path.resolve(code,'../../CSS/code/style.css');
+const rendererFile=path.resolve(code,'../Folders/renderer.js');
+const cssFile=path.resolve(code,'../CSS/style.css');
 const logFile=path.join(code,'ui.log');
 const clients=new Map(),connecting=new Set(),watchers=[],closingHidden=new Set(),seenVisiblePort=new Set();
 const catalog=new CatalogStore();

@@ -36,7 +36,7 @@ function Prepare-CodexUpdate {
         Ready=(-not $deferred);Newer=$newer;RunningProcesses=$inUse;PreparationAvailable=$true}
 }
 try {
-    $packageSource = Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'Multi-Account\code\CodexPackage.cs'
+    $packageSource = Join-Path (Split-Path $PSScriptRoot -Parent) 'Multi-Account\CodexPackage.cs'
     Add-Type -Path @($packageSource, (Join-Path $PSScriptRoot 'C1Runtime.cs')) -ReferencedAssemblies @('System.Xml.dll','System.Xml.Linq.dll','System.Management.dll')
     if ($Launch) {
         $existing = [C1Runtime]::Probe()

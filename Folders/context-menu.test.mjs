@@ -71,7 +71,7 @@ test('outside pointer presses close our context menu',()=>{
 });
 
 test('CDP installer puts Escape guard before existing capture handlers and retains their flags',()=>{
-  const source=fs.readFileSync(new URL('../../UI/code/daemon.mjs',import.meta.url),'utf8');
+  const source=fs.readFileSync(new URL('../UI/daemon.mjs',import.meta.url),'utf8');
   const script=source.match(/expression:`(\(\(\) => \{[\s\S]*?)`,includeCommandLineAPI:true/)[1];
   const native=()=>{},guard=()=>{},bubble=()=>{};
   let listeners=[{listener:native,useCapture:true,once:true,passive:false},{listener:guard,useCapture:true},{listener:bubble,useCapture:false}];

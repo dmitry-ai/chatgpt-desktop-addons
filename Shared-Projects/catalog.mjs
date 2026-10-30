@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {randomUUID,createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-import {applyOperation,validate as validateFolders,emptyState} from '../../Folders/code/store.mjs';
+import {applyOperation,validate as validateFolders,emptyState} from '../Folders/store.mjs';
 import {backupProfiles} from './backup.mjs';
 
 export const stateDirectory=path.join(path.dirname(fileURLToPath(import.meta.url)),'state');
