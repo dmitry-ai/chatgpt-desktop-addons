@@ -123,7 +123,18 @@ public static class LauncherTests {
             Assert(C2Process.FirstArgument("simple.exe --x") == "simple.exe", "Unquoted path was not parsed.");
         });
         Test("package identity check rejects unrelated process", () => {
-            using (var self = Process.GetCurrentProcess()) Assert(!CodexPackage.Owns(self), "Test harness mistaken for Codex.");
+            using (var self = Process.GetCurrentProcess()) {
+                Assert(!CodexPackage.Owns(self), "Test harness mistaken for Codex.");
+                Assert(!CodexPackage.OwnsProcessId(self.Id), "Test harness PID mistaken for Codex.");
+                string exe = CodexPackage.ReadProcessExecutablePath(self.Id);
+                string cmd = CodexPackage.ReadProcessCommandLine(self.Id);
+                int ppid = CodexPackage.GetParentProcessId(self.Id);
+                Assert(!string.IsNullOrEmpty(exe) && File.Exists(exe), "Executable path was not read via Win32.");
+                Assert(!string.IsNullOrEmpty(cmd), "Command line was not read via PEB.");
+                Assert(ppid > 0, "Parent PID was not read via NtQueryInformationProcess.");
+            }
+            var available = CodexPackage.SelectCandidates(CodexPackage.Available(), null);
+            Assert(available.Count > 0 && available[0].Version >= current.Version, "Available packages did not include current or newer version.");
         });
     }
 

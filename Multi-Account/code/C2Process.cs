@@ -43,31 +43,30 @@ public static class C2Process {
     public static Process FindExisting(string alias, int debugPort) {
         Process found = null;
         try {
-            using (var search = new ManagementObjectSearcher("SELECT ProcessId, CommandLine FROM Win32_Process WHERE CommandLine IS NOT NULL"))
-            using (var results = search.Get()) {
-                foreach (ManagementObject item in results) {
-                    using (item) {
-                        string command = item["CommandLine"] as string;
-                        if (!string.Equals(FirstArgument(command), alias, StringComparison.OrdinalIgnoreCase) ||
-                            !command.Split(' ').Contains("--remote-debugging-port=" + debugPort)) continue;
-                        Process candidate = null;
-                        try {
-                            candidate = Process.GetProcessById(Convert.ToInt32(item["ProcessId"]));
-                            // Pin the OS process object: a recycled PID can never be our target.
-                            IntPtr pinned = candidate.Handle;
-                            if (candidate.HasExited || !CodexPackage.Owns(candidate)) { candidate.Dispose(); continue; }
-                            if (found != null) throw new InvalidOperationException("More than one verified C2 instance is running.");
-                            found = candidate;
-                            candidate = null;
-                        } catch (ArgumentException) {
-                            // Candidate exited between the WMI snapshot and opening its handle.
-                        } catch (InvalidOperationException) {
-                            if (candidate != null && candidate.HasExited) continue;
-                            throw;
-                        } finally {
-                            if (candidate != null) candidate.Dispose();
-                        }
-                    }
+            foreach (int pid in CodexPackage.RunningUiProcesses()) {
+                string command = CodexPackage.ReadProcessCommandLine(pid);
+                if (string.IsNullOrEmpty(command) ||
+                    !string.Equals(FirstArgument(command), alias, StringComparison.OrdinalIgnoreCase) ||
+                    !command.Split(' ').Contains("--remote-debugging-port=" + debugPort)) continue;
+                Process candidate = null;
+                try {
+                    candidate = Process.GetProcessById(pid);
+                    // Pin the OS process object: a recycled PID can never be our target.
+                    IntPtr pinned = candidate.Handle;
+                    if (candidate.HasExited || !CodexPackage.Owns(candidate)) { candidate.Dispose(); continue; }
+                    if (found != null) throw new InvalidOperationException("More than one verified C2 instance is running.");
+                    found = candidate;
+                    candidate = null;
+                } catch (ArgumentException) {
+                    // Candidate exited between snapshot and opening its handle.
+                } catch (InvalidOperationException) {
+                    if (candidate != null && candidate.HasExited) continue;
+                    throw;
+                } catch (Win32Exception) {
+                    if (candidate != null && candidate.HasExited) continue;
+                    throw;
+                } finally {
+                    if (candidate != null) candidate.Dispose();
                 }
             }
             return found;
@@ -144,34 +143,29 @@ public static class C2Process {
             for (int i = 0; i < owned.Count; i++) {
                 Process parent = owned[i];
                 if (parent.HasExited) continue;
-                using (var search = new ManagementObjectSearcher("SELECT ProcessId FROM Win32_Process WHERE ParentProcessId=" + parent.Id))
-                using (var results = search.Get()) {
-                    foreach (ManagementObject item in results) {
-                        using (item) {
-                            int pid = Convert.ToInt32(item["ProcessId"]);
-                            if (seen.Contains(pid)) continue;
-                            Process child = null;
-                            try {
-                                child = Process.GetProcessById(pid);
-                                IntPtr pinned = child.Handle;
-                                if (child.HasExited || child.StartTime.ToUniversalTime() < parent.StartTime.ToUniversalTime()) continue;
-                                using (var current = new ManagementObject("Win32_Process.Handle='" + pid + "'")) {
-                                    current.Get();
-                                    if (Convert.ToInt32(current["ParentProcessId"]) != parent.Id) continue;
-                                }
-                                owned.Add(child);
-                                seen.Add(pid);
-                                child = null;
-                            } catch (ArgumentException) {
-                                // Child exited before we opened it.
-                            } catch (InvalidOperationException) {
-                                if (child == null || !child.HasExited) throw;
-                            } catch (ManagementException ex) {
-                                if (child == null || !child.HasExited) throw new InvalidOperationException("Cannot verify child process parentage.", ex);
-                            } finally {
-                                if (child != null) child.Dispose();
-                            }
-                        }
+                DateTime parentStart = parent.StartTime.ToUniversalTime();
+                foreach (Process snapshot in Process.GetProcesses()) {
+                    int pid;
+                    using (snapshot) { pid = snapshot.Id; }
+                    if (pid <= 4 || seen.Contains(pid)) continue;
+                    if (CodexPackage.GetParentProcessId(pid) != parent.Id) continue;
+                    Process child = null;
+                    try {
+                        child = Process.GetProcessById(pid);
+                        IntPtr pinned = child.Handle;
+                        if (child.HasExited || child.StartTime.ToUniversalTime() < parentStart) continue;
+                        if (CodexPackage.GetParentProcessId(child.Id) != parent.Id) continue;
+                        owned.Add(child);
+                        seen.Add(pid);
+                        child = null;
+                    } catch (ArgumentException) {
+                        // Child exited before we opened it.
+                    } catch (InvalidOperationException) {
+                        if (child == null || !child.HasExited) throw;
+                    } catch (Win32Exception) {
+                        if (child == null || !child.HasExited) throw;
+                    } finally {
+                        if (child != null) child.Dispose();
                     }
                 }
             }

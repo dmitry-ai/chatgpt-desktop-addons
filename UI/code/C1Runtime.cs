@@ -134,6 +134,20 @@ public static class C1Runtime {
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool TerminateProcess(IntPtr process, uint exitCode);
 
+    private static bool ShutdownNewbornProcess(Process process) {
+        if (process == null || process.HasExited) return true;
+        var wait = Stopwatch.StartNew();
+        while (!process.HasExited && wait.ElapsedMilliseconds < 3000) {
+            if (WindowsRestart.IsRegistered(process)) {
+                try { WindowsRestart.Shutdown(process); return true; }
+                catch { if (process.HasExited) return true; }
+            }
+            System.Threading.Thread.Sleep(100);
+        }
+        if (!process.HasExited) StopOwnedTree(process);
+        return process.HasExited;
+    }
+
     public static int Launch(bool activateExisting) {
         CodexPackage package = CodexPackage.Resolve(null);
         using (Process existing = Find(package)) {
@@ -141,6 +155,8 @@ public static class C1Runtime {
                 if (!HasPort(existing.Id)) {
                     if (!HasVisibleMainWindow(existing.Id)) {
                         CloseHiddenProcess(existing.Id, existing.StartTime.ToUniversalTime().Ticks.ToString());
+                    } else if (!activateExisting && (DateTime.UtcNow - existing.StartTime.ToUniversalTime()).TotalSeconds < 15) {
+                        ShutdownNewbornProcess(existing);
                     } else {
                         throw new InvalidOperationException(
                             "C1 is already open without its UI connection. Fully exit C1 once, then open the C1 shortcut.");
@@ -151,13 +167,20 @@ public static class C1Runtime {
                 }
             }
         }
-        int pid = Activate();
-        using (Process process = Process.GetProcessById(pid)) {
-            IntPtr pinned = process.Handle;
-            if (!CodexPackage.Owns(process)) throw new InvalidOperationException("The C1 process has an unexpected package identity.");
-            if (!HasPort(process.Id)) throw new InvalidOperationException("C1 launched without its UI connection.");
-            return process.Id;
+        for (int attempt = 0; attempt < 2; attempt++) {
+            int pid = Activate();
+            using (Process process = Process.GetProcessById(pid)) {
+                IntPtr pinned = process.Handle;
+                if (!CodexPackage.Owns(process)) throw new InvalidOperationException("The C1 process has an unexpected package identity.");
+                if (HasPort(process.Id)) return process.Id;
+                if (attempt == 0 && (DateTime.UtcNow - process.StartTime.ToUniversalTime()).TotalSeconds < 15) {
+                    ShutdownNewbornProcess(process);
+                    continue;
+                }
+                throw new InvalidOperationException("C1 launched without its UI connection.");
+            }
         }
+        throw new InvalidOperationException("C1 launched without its UI connection.");
     }
     public static int[] PackageProcesses() {
         return CodexPackage.RunningUiProcesses();
@@ -173,46 +196,41 @@ public static class C1Runtime {
     }
     private static Process Find(CodexPackage package) {
         Process found = null;
-        string executableName = Path.GetFileName(package.Executable).Replace("'", "''");
         try {
-            using (var search = new ManagementObjectSearcher("SELECT ProcessId, CommandLine, ExecutablePath FROM Win32_Process WHERE Name='" + executableName + "'"))
-            using (var results = search.Get()) {
-                foreach (ManagementObject item in results) using (item) {
-                    string command = item["CommandLine"] as string;
-                    string image = item["ExecutablePath"] as string;
-                    // C2's AppExecLink has a different first argument, even though
-                    // Windows reports the same physical image for both profiles.
-                    if (string.IsNullOrEmpty(image) || !string.Equals(FirstArgument(command), image, StringComparison.OrdinalIgnoreCase) ||
-                        command.Contains("--type=") || command.Contains("--remote-debugging-port=9224") ||
-                        command.Contains("--user-data-dir=")) continue;
-                    Process candidate = null;
-                    try {
-                        candidate = Process.GetProcessById(Convert.ToInt32(item["ProcessId"]));
-                        IntPtr pinned = candidate.Handle;
-                        if (candidate.HasExited || !CodexPackage.Owns(candidate)) continue;
-                        // Warm package activation briefly spawns a second process that
-                        // forwards focus to the primary instance and exits; keep the older owner.
-                        if (found == null) { found = candidate; candidate = null; }
-                        else if (candidate.StartTime.ToUniversalTime() < found.StartTime.ToUniversalTime()) {
-                            found.Dispose(); found = candidate; candidate = null;
-                        }
-                    } catch (ArgumentException) {
-                    } catch (InvalidOperationException) {
-                        if (candidate == null || !candidate.HasExited) throw;
-                    } catch (Win32Exception) {
-                        if (candidate == null || !candidate.HasExited) throw;
-                    } finally { if (candidate != null) candidate.Dispose(); }
-                }
+            foreach (int pid in CodexPackage.RunningUiProcesses()) {
+                string command = CodexPackage.ReadProcessCommandLine(pid);
+                string image = CodexPackage.ReadProcessExecutablePath(pid);
+                // C2's AppExecLink has a different first argument, even though
+                // Windows reports the same physical image for both profiles.
+                if (string.IsNullOrEmpty(image) || string.IsNullOrEmpty(command) ||
+                    !string.Equals(FirstArgument(command), image, StringComparison.OrdinalIgnoreCase) ||
+                    command.Contains("--type=") || command.Contains("--remote-debugging-port=9224") ||
+                    command.Contains("--user-data-dir=")) continue;
+                Process candidate = null;
+                try {
+                    candidate = Process.GetProcessById(pid);
+                    IntPtr pinned = candidate.Handle;
+                    if (candidate.HasExited || !CodexPackage.Owns(candidate)) continue;
+                    // Warm package activation briefly spawns a second process that
+                    // forwards focus to the primary instance and exits; keep the older owner.
+                    if (found == null) { found = candidate; candidate = null; }
+                    else if (candidate.StartTime.ToUniversalTime() < found.StartTime.ToUniversalTime()) {
+                        found.Dispose(); found = candidate; candidate = null;
+                    }
+                } catch (ArgumentException) {
+                } catch (InvalidOperationException) {
+                    if (candidate == null || !candidate.HasExited) throw;
+                } catch (Win32Exception) {
+                    if (candidate == null || !candidate.HasExited) throw;
+                } finally { if (candidate != null) candidate.Dispose(); }
             }
             return found;
         } catch { if (found != null) found.Dispose(); throw; }
     }
     private static bool HasPort(int pid) {
-        using (var search = new ManagementObjectSearcher("SELECT CommandLine FROM Win32_Process WHERE ProcessId=" + pid))
-        using (var results = search.Get()) foreach (ManagementObject row in results) using (row) {
-            return System.Text.RegularExpressions.Regex.IsMatch(row["CommandLine"] as string ?? "", @"(?:^|\s)--remote-debugging-port(?:=|\s+)9223(?:\s|$)");
-        }
-        throw new InvalidOperationException("C1 exited during inspection.");
+        string command = CodexPackage.ReadProcessCommandLine(pid);
+        if (command == null) throw new InvalidOperationException("C1 exited during inspection.");
+        return System.Text.RegularExpressions.Regex.IsMatch(command, @"(?:^|\s)--remote-debugging-port(?:=|\s+)9223(?:\s|$)");
     }
     public static bool HasVisibleMainWindow(int pid) {
         IntPtr desktop = OpenDesktop("Default", 0, false, 0x00C1);
@@ -248,27 +266,24 @@ public static class C1Runtime {
         Process found = null;
         string pattern = @"(?:^|\s)--remote-debugging-port(?:=|\s+)" + debugPort + @"(?:\s|$)";
         try {
-            using (var search = new ManagementObjectSearcher("SELECT ProcessId, CommandLine FROM Win32_Process WHERE CommandLine IS NOT NULL"))
-            using (var results = search.Get()) {
-                foreach (ManagementObject item in results) using (item) {
-                    string command = item["CommandLine"] as string ?? "";
-                    if (command.Contains("--type=") || !System.Text.RegularExpressions.Regex.IsMatch(command, pattern)) continue;
-                    Process candidate = null;
-                    try {
-                        candidate = Process.GetProcessById(Convert.ToInt32(item["ProcessId"]));
-                        IntPtr pinned = candidate.Handle;
-                        if (candidate.HasExited || !CodexPackage.Owns(candidate)) continue;
-                        if (found == null) { found = candidate; candidate = null; }
-                        else if (candidate.StartTime.ToUniversalTime() < found.StartTime.ToUniversalTime()) {
-                            found.Dispose(); found = candidate; candidate = null;
-                        }
-                    } catch (ArgumentException) {
-                    } catch (InvalidOperationException) {
-                        if (candidate == null || !candidate.HasExited) throw;
-                    } catch (Win32Exception) {
-                        if (candidate == null || !candidate.HasExited) throw;
-                    } finally { if (candidate != null) candidate.Dispose(); }
-                }
+            foreach (int pid in CodexPackage.RunningUiProcesses()) {
+                string command = CodexPackage.ReadProcessCommandLine(pid) ?? "";
+                if (command.Contains("--type=") || !System.Text.RegularExpressions.Regex.IsMatch(command, pattern)) continue;
+                Process candidate = null;
+                try {
+                    candidate = Process.GetProcessById(pid);
+                    IntPtr pinned = candidate.Handle;
+                    if (candidate.HasExited || !CodexPackage.Owns(candidate)) continue;
+                    if (found == null) { found = candidate; candidate = null; }
+                    else if (candidate.StartTime.ToUniversalTime() < found.StartTime.ToUniversalTime()) {
+                        found.Dispose(); found = candidate; candidate = null;
+                    }
+                } catch (ArgumentException) {
+                } catch (InvalidOperationException) {
+                    if (candidate == null || !candidate.HasExited) throw;
+                } catch (Win32Exception) {
+                    if (candidate == null || !candidate.HasExited) throw;
+                } finally { if (candidate != null) candidate.Dispose(); }
             }
             return found;
         } catch { if (found != null) found.Dispose(); throw; }
@@ -313,31 +328,28 @@ public static class C1Runtime {
             for (int i = 0; i < owned.Count; i++) {
                 Process parent = owned[i];
                 if (parent.HasExited) continue;
-                using (var search = new ManagementObjectSearcher("SELECT ProcessId FROM Win32_Process WHERE ParentProcessId=" + parent.Id))
-                using (var results = search.Get()) {
-                    foreach (ManagementObject item in results) using (item) {
-                        int pid = Convert.ToInt32(item["ProcessId"]);
-                        if (seen.Contains(pid)) continue;
-                        Process child = null;
-                        try {
-                            child = Process.GetProcessById(pid);
-                            IntPtr pinned = child.Handle;
-                            if (child.HasExited || child.StartTime.ToUniversalTime() < parent.StartTime.ToUniversalTime()) continue;
-                            using (var current = new ManagementObject("Win32_Process.Handle='" + pid + "'")) {
-                                current.Get();
-                                if (Convert.ToInt32(current["ParentProcessId"]) != parent.Id) continue;
-                            }
-                            owned.Add(child);
-                            seen.Add(pid);
-                            child = null;
-                        } catch (ArgumentException) {
-                        } catch (InvalidOperationException) {
-                            if (child == null || !child.HasExited) throw;
-                        } catch (ManagementException ex) {
-                            if (child == null || !child.HasExited) throw new InvalidOperationException("Cannot verify child process parentage.", ex);
-                        } finally {
-                            if (child != null) child.Dispose();
-                        }
+                DateTime parentStart = parent.StartTime.ToUniversalTime();
+                foreach (Process snapshot in Process.GetProcesses()) {
+                    int pid;
+                    using (snapshot) { pid = snapshot.Id; }
+                    if (pid <= 4 || seen.Contains(pid)) continue;
+                    if (CodexPackage.GetParentProcessId(pid) != parent.Id) continue;
+                    Process child = null;
+                    try {
+                        child = Process.GetProcessById(pid);
+                        IntPtr pinned = child.Handle;
+                        if (child.HasExited || child.StartTime.ToUniversalTime() < parentStart) continue;
+                        if (CodexPackage.GetParentProcessId(child.Id) != parent.Id) continue;
+                        owned.Add(child);
+                        seen.Add(pid);
+                        child = null;
+                    } catch (ArgumentException) {
+                    } catch (InvalidOperationException) {
+                        if (child == null || !child.HasExited) throw;
+                    } catch (Win32Exception) {
+                        if (child == null || !child.HasExited) throw;
+                    } finally {
+                        if (child != null) child.Dispose();
                     }
                 }
             }
@@ -389,6 +401,7 @@ public static class C1Runtime {
             string.Equals(name.ToString(), "Default", StringComparison.OrdinalIgnoreCase);
     }
     public static int Activate() {
+        CodexPackage.EnsureLatestRegistered(null);
         CodexPackage pkg = CodexPackage.Resolve(null);
         if (CodexPackage.NeedsRegistration(pkg.FullName)) {
             CodexPackage.EnsureRegistered(pkg, null);

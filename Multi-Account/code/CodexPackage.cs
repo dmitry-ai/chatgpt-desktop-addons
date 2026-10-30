@@ -8,6 +8,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Xml;
 using System.Xml.Linq;
+using Microsoft.Win32;
 
 public sealed class CodexPackage {
     public const string Family = "OpenAI.Codex_2p2nqsd0c76g0";
@@ -35,6 +36,8 @@ public sealed class CodexPackage {
         IntPtr names, ref uint bufferLength, IntPtr buffer);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetPackagePathByFullName(string fullName, ref uint length, StringBuilder path);
+    [DllImport("kernelbase.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetStagedPackagePathByFullName(string packageFullName, ref uint pathLength, StringBuilder path);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetPackageFamilyName(IntPtr process, ref uint length, StringBuilder family);
     [DllImport("kernelbase.dll", CharSet = CharSet.Unicode)]
@@ -43,6 +46,8 @@ public sealed class CodexPackage {
     private static extern int GetPackageStatusForUser(IntPtr userSid, string packageFullName, out uint status);
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern IntPtr OpenProcess(uint desiredAccess, bool inheritHandle, int processId);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool QueryFullProcessImageName(IntPtr hProcess, int dwFlags, StringBuilder lpExeName, ref int lpdwSize);
     [DllImport("kernel32.dll")]
     private static extern bool CloseHandle(IntPtr handle);
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -92,6 +97,64 @@ public sealed class CodexPackage {
             }
         }
         throw new IOException("Codex registration kept changing during the update. Try again shortly.");
+    }
+
+    public static List<CodexPackage> Staged() {
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        string[] registryPaths = new[] {
+            @"SOFTWARE\Microsoft\Windows\CurrentVersion\AppModel\StateRepository\Cache\Package\Index\PackageFullName",
+            @"SOFTWARE\Microsoft\Windows\CurrentVersion\AppModel\StateChange\PackageList",
+            @"SOFTWARE\Microsoft\Windows\CurrentVersion\Appx\AppxAllUserStore\Applications",
+            @"SOFTWARE\Microsoft\Windows\CurrentVersion\Appx\AppxAllUserStore\Staged",
+            @"SOFTWARE\Microsoft\Windows\CurrentVersion\Appx\AppxAllUserStore\S-1-5-18"
+        };
+        foreach (string regPath in registryPaths) {
+            try {
+                using (RegistryKey key = Registry.LocalMachine.OpenSubKey(regPath, false)) {
+                    if (key == null) continue;
+                    foreach (string subName in key.GetSubKeyNames()) {
+                        if (subName.StartsWith("OpenAI.Codex_", StringComparison.OrdinalIgnoreCase) &&
+                            subName.EndsWith("__2p2nqsd0c76g0", StringComparison.OrdinalIgnoreCase)) {
+                            names.Add(subName);
+                        }
+                    }
+                }
+            } catch { }
+        }
+        try {
+            string windowsApps = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "WindowsApps");
+            if (Directory.Exists(windowsApps)) {
+                foreach (string dir in Directory.GetDirectories(windowsApps, "OpenAI.Codex_*__2p2nqsd0c76g0")) {
+                    string name = Path.GetFileName(dir);
+                    if (!string.IsNullOrEmpty(name)) names.Add(name);
+                }
+            }
+        } catch { }
+        var result = new List<CodexPackage>();
+        foreach (string fullName in names) {
+            uint pathLength = 0;
+            int rc = GetStagedPackagePathByFullName(fullName, ref pathLength, null);
+            if (rc != InsufficientBuffer || pathLength == 0) continue;
+            var path = new StringBuilder(checked((int)pathLength));
+            rc = GetStagedPackagePathByFullName(fullName, ref pathLength, path);
+            if (rc != 0) continue;
+            string root = path.ToString();
+            if (string.IsNullOrEmpty(root) || !Directory.Exists(root)) continue;
+            Version version;
+            string[] parts = fullName.Split('_');
+            if (parts.Length < 2 || !Version.TryParse(parts[1], out version)) continue;
+            result.Add(new CodexPackage { FullName = fullName, Root = root, Version = version });
+        }
+        return result.OrderByDescending(p => p.Version).ToList();
+    }
+
+    public static List<CodexPackage> Available() {
+        var byName = new Dictionary<string, CodexPackage>(StringComparer.OrdinalIgnoreCase);
+        foreach (CodexPackage pkg in Installed()) byName[pkg.FullName] = pkg;
+        foreach (CodexPackage pkg in Staged()) {
+            if (!byName.ContainsKey(pkg.FullName)) byName[pkg.FullName] = pkg;
+        }
+        return byName.Values.OrderByDescending(p => p.Version).ToList();
     }
 
     public static CodexPackage Resolve(Action<string> log) { return Select(Installed(), log); }
@@ -148,18 +211,44 @@ public sealed class CodexPackage {
     }
 
     public static bool Owns(Process process) {
-        uint length = 0;
-        int rc = GetPackageFamilyName(process.Handle, ref length, null);
-        if (rc == NoPackage) return false;
-        if (rc != InsufficientBuffer) throw new Win32Exception(rc, "Cannot verify process package identity.");
-        var family = new StringBuilder(checked((int)length));
-        rc = GetPackageFamilyName(process.Handle, ref length, family);
-        if (rc != 0) throw new Win32Exception(rc, "Cannot verify process package identity.");
-        return string.Equals(family.ToString(), Family, StringComparison.Ordinal);
+        if (process == null) return false;
+        IntPtr handle = OpenProcess(0x1000, false, process.Id);
+        bool close = handle != IntPtr.Zero;
+        if (!close) handle = process.Handle;
+        try {
+            uint length = 0;
+            int rc = GetPackageFamilyName(handle, ref length, null);
+            if (rc == NoPackage) return false;
+            if (rc != InsufficientBuffer) throw new Win32Exception(rc, "Cannot verify process package identity.");
+            var family = new StringBuilder(checked((int)length));
+            rc = GetPackageFamilyName(handle, ref length, family);
+            if (rc != 0) throw new Win32Exception(rc, "Cannot verify process package identity.");
+            return string.Equals(family.ToString(), Family, StringComparison.Ordinal);
+        } finally {
+            if (close) CloseHandle(handle);
+        }
+    }
+
+    public static bool OwnsProcessId(int pid) {
+        if (pid <= 4) return false;
+        IntPtr handle = OpenProcess(0x1000, false, pid);
+        if (handle == IntPtr.Zero) return false;
+        try {
+            uint length = 0;
+            int rc = GetPackageFamilyName(handle, ref length, null);
+            if (rc != InsufficientBuffer || length == 0) return false;
+            var family = new StringBuilder(checked((int)length));
+            return GetPackageFamilyName(handle, ref length, family) == 0 &&
+                string.Equals(family.ToString(), Family, StringComparison.Ordinal);
+        } finally {
+            CloseHandle(handle);
+        }
     }
 
     public static bool NeedsRegistration(string fullName) {
         if (string.IsNullOrEmpty(fullName)) return false;
+        bool registeredForUser = Installed().Any(p => string.Equals(p.FullName, fullName, StringComparison.OrdinalIgnoreCase));
+        if (!registeredForUser) return true;
         uint userStatus = 0, machineStatus = 0;
         int rcUser = GetPackageStatusForUser(IntPtr.Zero, fullName, out userStatus);
         int rcMachine = GetPackageStatus(fullName, out machineStatus);
@@ -170,9 +259,9 @@ public sealed class CodexPackage {
         var result = new List<int>();
         foreach (Process process in Process.GetProcesses()) using (process) {
             try {
-                if (process.HasExited || process.SessionId == 0) continue;
+                if (process.Id <= 4 || process.SessionId == 0) continue;
                 if (string.Equals(process.ProcessName, "codex-windows-sandbox-service", StringComparison.OrdinalIgnoreCase)) continue;
-                if (Owns(process)) result.Add(process.Id);
+                if (OwnsProcessId(process.Id) && !process.HasExited) result.Add(process.Id);
             }
             catch (Win32Exception) { }
             catch (InvalidOperationException) { }
@@ -180,10 +269,74 @@ public sealed class CodexPackage {
         return result.ToArray();
     }
 
+    public static string ReadProcessExecutablePath(int pid) {
+        if (pid <= 4) return null;
+        IntPtr h = OpenProcess(0x1000, false, pid);
+        if (h == IntPtr.Zero) return null;
+        try {
+            int capacity = 1024;
+            var sb = new StringBuilder(capacity);
+            return QueryFullProcessImageName(h, 0, sb, ref capacity) ? sb.ToString(0, capacity) : null;
+        } catch {
+            return null;
+        } finally {
+            CloseHandle(h);
+        }
+    }
+
+    public static int GetParentProcessId(int pid) {
+        if (pid <= 4) return 0;
+        IntPtr h = OpenProcess(0x1000, false, pid);
+        if (h == IntPtr.Zero) h = OpenProcess(0x0400, false, pid);
+        if (h == IntPtr.Zero) return 0;
+        try {
+            var pbi = new PROCESS_BASIC_INFORMATION();
+            int retLen;
+            if (NtQueryInformationProcess(h, 0, ref pbi, Marshal.SizeOf(pbi), out retLen) != 0) return 0;
+            return pbi.InheritedFromUniqueProcessId.ToInt32();
+        } catch {
+            return 0;
+        } finally {
+            CloseHandle(h);
+        }
+    }
+
+    public static string ReadProcessCommandLine(int pid) {
+        if (IntPtr.Size != 8 || pid <= 4) return null;
+        IntPtr h = OpenProcess(0x1010, false, pid);
+        if (h == IntPtr.Zero) h = OpenProcess(0x0410, false, pid);
+        if (h == IntPtr.Zero) return null;
+        try {
+            var pbi = new PROCESS_BASIC_INFORMATION();
+            int retLen;
+            if (NtQueryInformationProcess(h, 0, ref pbi, Marshal.SizeOf(pbi), out retLen) != 0 || pbi.PebBaseAddress == IntPtr.Zero)
+                return null;
+            byte[] ptrBuf = new byte[8];
+            IntPtr read;
+            if (!ReadProcessMemory(h, (IntPtr)(pbi.PebBaseAddress.ToInt64() + 0x20), ptrBuf, 8, out read)) return null;
+            IntPtr procParams = (IntPtr)BitConverter.ToInt64(ptrBuf, 0);
+            if (procParams == IntPtr.Zero) return null;
+            byte[] cmdHeader = new byte[16];
+            if (!ReadProcessMemory(h, (IntPtr)(procParams.ToInt64() + 0x70), cmdHeader, 16, out read)) return null;
+            ushort byteLen = BitConverter.ToUInt16(cmdHeader, 0);
+            IntPtr cmdPtr = (IntPtr)BitConverter.ToInt64(cmdHeader, 8);
+            if (byteLen == 0) return "";
+            if (cmdPtr == IntPtr.Zero) return null;
+            byte[] cmdBuf = new byte[byteLen];
+            if (!ReadProcessMemory(h, cmdPtr, cmdBuf, byteLen, out read)) return null;
+            return Encoding.Unicode.GetString(cmdBuf);
+        } catch {
+            return null;
+        } finally {
+            CloseHandle(h);
+        }
+    }
+
     public static Dictionary<string, string> ReadProcessEnvironment(int pid) {
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         if (IntPtr.Size != 8 || pid <= 4) return result;
-        IntPtr h = OpenProcess(0x0410, false, pid);
+        IntPtr h = OpenProcess(0x1010, false, pid);
+        if (h == IntPtr.Zero) h = OpenProcess(0x0410, false, pid);
         if (h == IntPtr.Zero) return result;
         try {
             var pbi = new PROCESS_BASIC_INFORMATION();
@@ -299,17 +452,25 @@ public sealed class CodexPackage {
         if (orphans.Count > 0) StopProcesses(orphans, log);
     }
 
+    public static bool EnsureLatestRegistered(Action<string> log) {
+        var available = SelectCandidates(Available(), log);
+        if (available.Count == 0) return false;
+        return EnsureRegistered(available[0], log);
+    }
+
     public static bool EnsureRegistered(CodexPackage package, Action<string> log) {
+        var available = SelectCandidates(Available(), log);
+        if (available.Count > 0 && (package == null || available[0].Version > package.Version)) {
+            package = available[0];
+        }
         if (package == null || string.IsNullOrEmpty(package.FullName)) return false;
         if (!NeedsRegistration(package.FullName)) return true;
         if (RunningUiProcesses().Length > 0) {
             if (log != null) log("Package " + package.FullName + " requires registration, but a Codex UI instance is currently open.");
             return false;
         }
-        StopOrphanContainerProcesses(log);
         string manifest = Path.Combine(package.Root, "AppxManifest.xml");
         if (!File.Exists(manifest)) return false;
-        if (log != null) log("Completing Windows registration for " + package.FullName + "...");
         string ps = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),
             @"WindowsPowerShell\v1.0\powershell.exe");
         string escaped = manifest.Replace("'", "''");
@@ -317,21 +478,31 @@ public sealed class CodexPackage {
                      "$ProgressPreference = 'SilentlyContinue'; " +
                      "Add-AppxPackage -Register '" + escaped + "' -DisableDevelopmentMode -ForceApplicationShutdown -ForceUpdateFromAnyVersion";
         string encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(cmd));
-        var psi = new ProcessStartInfo(ps, "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand " + encoded) {
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardError = true
-        };
-        using (Process proc = Process.Start(psi)) {
-            string stderr = proc.StandardError.ReadToEnd();
-            if (!proc.WaitForExit(60000)) {
-                try { proc.Kill(); } catch { }
-                if (log != null) log("Registration timed out for " + package.FullName);
-                return false;
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            if (RunningUiProcesses().Length > 0) return false;
+            StopOrphanContainerProcesses(log);
+            if (log != null) log("Completing Windows registration for " + package.FullName + (attempt > 1 ? " (attempt " + attempt + ")" : "") + "...");
+            var psi = new ProcessStartInfo(ps, "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand " + encoded) {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardError = true
+            };
+            using (Process proc = Process.Start(psi)) {
+                string stderr = proc.StandardError.ReadToEnd();
+                if (!proc.WaitForExit(60000)) {
+                    try { proc.Kill(); } catch { }
+                    if (log != null) log("Registration timed out for " + package.FullName);
+                    return false;
+                }
+                if (proc.ExitCode != 0 && log != null && !string.IsNullOrEmpty(stderr)) {
+                    log("Registration warning for " + package.FullName + ": " + stderr.Trim());
+                }
             }
-            if (proc.ExitCode != 0 && log != null && !string.IsNullOrEmpty(stderr)) {
-                log("Registration warning for " + package.FullName + ": " + stderr.Trim());
+            if (!NeedsRegistration(package.FullName)) {
+                if (log != null) log("Registration status for " + package.FullName + ": OK");
+                return true;
             }
+            if (attempt < 3) System.Threading.Thread.Sleep(1000);
         }
         bool ready = !NeedsRegistration(package.FullName);
         if (log != null) log("Registration status for " + package.FullName + ": " + (ready ? "OK" : "still pending"));

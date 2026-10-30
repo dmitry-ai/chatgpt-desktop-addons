@@ -161,10 +161,13 @@ public class ChatGPT2Launcher {
     [STAThread]
     public static int Main(string[] args) {
         string appDir = AppDomain.CurrentDomain.BaseDirectory;
-        string profile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Codex-Profile2");
+        string appData = Environment.GetEnvironmentVariable("APPDATA");
+        if (string.IsNullOrWhiteSpace(appData)) appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        string localAppData = Environment.GetEnvironmentVariable("LOCALAPPDATA");
+        if (string.IsNullOrWhiteSpace(localAppData)) localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        string profile = Path.Combine(appData, "Codex-Profile2");
         logPath = Path.Combine(profile, "launcher.log");
-        string alias = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            @"Microsoft\WindowsApps\ChatGPT2.exe");
+        string alias = Path.Combine(localAppData, @"Microsoft\WindowsApps\ChatGPT2.exe");
         bool diagnostic = args.Length == 1 && args[0] == "--repair-alias";
         Log("=== ChatGPT2Launcher invoked ===");
         bool owned = false;
@@ -240,9 +243,11 @@ public class ChatGPT2Launcher {
     }
 
     private static CodexPackage RepairAlias(string alias) {
+        CodexPackage.EnsureLatestRegistered(Log);
         CodexPackage package = CodexPackage.Resolve(Log);
         if (CodexPackage.NeedsRegistration(package.FullName)) {
             CodexPackage.EnsureRegistered(package, Log);
+            package = CodexPackage.Resolve(Log);
         }
         bool changed = AppExecLink.Ensure(alias, CodexPackage.Family, package.AppUserModelId, package.Executable);
         Log(string.Format("Execution alias {0}: {1}; app ID: {2}.",
@@ -251,6 +256,7 @@ public class ChatGPT2Launcher {
     }
 
     private static Process Launch(string alias, string profile) {
+        CodexPackage.EnsureLatestRegistered(Log);
         var candidates = CodexPackage.SelectCandidates(CodexPackage.Installed(), Log);
         if (candidates.Count == 0)
             throw new FileNotFoundException("No registered Codex package has a valid desktop application and executable.");

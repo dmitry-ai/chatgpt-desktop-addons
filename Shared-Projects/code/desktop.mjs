@@ -89,15 +89,24 @@ async function connectDesktop(findExport, findHost, makeLedger,findBus,requestCo
     ...performance.getEntriesByType('resource').map(e => e.name),
     ...[...document.scripts].map(e => e.src)
   ])].filter(url => /^app:\/\/-\/assets\/app-initial-[\w-]+\.js$/.test(url));
-  if (!urls.length) {
-    const found = new Set();
-    for (const script of document.scripts) {
-      if (!/^app:\/\/-\/assets\/index-[\w-]+\.js$/.test(script.src)) continue;
-      const entry = await (await fetch(script.src)).text();
-      for (const match of entry.matchAll(/app-initial-[\w-]+\.js/g)) found.add(new URL('./'+match[0], script.src).href);
+  const primaryUrls = new Set();
+  const scanBootstrap = async () => {
+    const found = new Set(), seen = new Set();
+    const queue = [...document.scripts].map(s => s.src).filter(u => /^app:\/\/-\/assets\/index-[\w-]+\.js$/.test(u));
+    while (queue.length) {
+      const next = queue.shift();
+      if (seen.has(next)) continue;
+      seen.add(next);
+      const res = await fetch(next);
+      if (!res.ok) continue;
+      const entry = await res.text();
+      for (const match of entry.matchAll(/app-initial-[\w-]+\.js/g)) found.add(new URL('./'+match[0], next).href);
+      for (const match of entry.matchAll(/app-primary-[\w-]+\.js/g)) primaryUrls.add(new URL('./'+match[0], next).href);
+      for (const match of entry.matchAll(/app-(?:main|runtime)-[\w-]+\.js/g)) queue.push(new URL('./'+match[0], next).href);
     }
-    urls = [...found];
-  }
+    return [...found];
+  };
+  if (!urls.length) urls = await scanBootstrap();
   if (urls.length !== 1) throw Error('Основной модуль Desktop App не найден или неоднозначен');
   const url = urls[0];
   const response = await fetch(url);
@@ -105,8 +114,9 @@ async function connectDesktop(findExport, findHost, makeLedger,findBus,requestCo
   const source = await response.text();
   let bundle = source;
   if (!bundle.includes('.upsertLocal(') || !bundle.includes('.editLocal(') || !bundle.includes('.setProjectOrder(') || !/\.upsertLocal\([\s\S]{0,600}?,[`'"]restore[`'"]\)/.test(bundle)) {
-    const extra = [...new Set([...source.matchAll(/app-primary-[\w-]+\.js/g)].map(m => new URL('./'+m[0], url).href))];
-    for (const nextUrl of extra) { const res = await fetch(nextUrl); if (res.ok) bundle += '\n' + await res.text(); }
+    for (const match of source.matchAll(/app-primary-[\w-]+\.js/g)) primaryUrls.add(new URL('./'+match[0], url).href);
+    if (!primaryUrls.size) await scanBootstrap();
+    for (const nextUrl of primaryUrls) { const res = await fetch(nextUrl); if (res.ok) bundle += '\n' + await res.text(); }
   }
   if (!bundle.includes('.upsertLocal(') || !bundle.includes('.editLocal(') || !bundle.includes('.setProjectOrder(')) {
     throw Error('Изменился контракт проектов Desktop App; синхронизация остановлена');

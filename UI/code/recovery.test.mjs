@@ -157,6 +157,23 @@ test('a failed attempt stays blocked until a verified session, then a later upda
   f.setMarker({at:since+10000});f.setCurrent(null);f.setPrepared({Ready:true,Newer:true});
   await f.update.tick(since+12000);assert.deepEqual(f.calls.at(-1),['launch']);
 });
+test('newborn unchanged-version relaunch after failed Store registration is recovered into the staged update',async()=>{
+  const f=updateFixture();await f.update.tick(since,true);f.setMarker({at:since+1000});
+  const reopenedOld={...f.origin,Pid:124,StartTicks:'reopened',StartedAt:new Date(since+2000).toISOString(),Package:oldPackage,HasDebugPort:false};
+  f.setCurrent(reopenedOld);await f.update.tick(since+4000,false);
+  assert.deepEqual(f.calls,[['recover',124]]);assert.equal(f.update.status.state,'waiting-for-ui');
+  f.setCurrent({...f.origin,Pid:125,StartTicks:'updated',StartedAt:new Date(since+5000).toISOString(),Package:newPackage,HasDebugPort:true});
+  await f.update.tick(since+7000,true);assert.equal(f.update.status.state,'verified');assert.equal(f.update.pending,null);
+});
+test('a fresh update intent from a new process unblocks a previously failed update even without debug port',async()=>{
+  const f=updateFixture();await f.update.tick(since,true);f.setMarker({at:since+1000});f.setCurrent(null);
+  f.setPrepared({Ready:true,Newer:false});await f.update.tick(since+3000);assert.equal(f.update.failed,true);
+  const unported={...f.origin,Pid:125,StartTicks:'unported',StartedAt:new Date(since+4000).toISOString(),Package:oldPackage,HasDebugPort:false};
+  f.setCurrent(unported);f.setMarker({at:since+5000,pid:125,startTicks:'unported'});
+  await f.update.tick(since+6000,false);assert.equal(f.update.failed,false);assert.equal(f.update.status.state,'waiting-for-updater-exit');
+  f.setCurrent(null);f.setPrepared({Ready:true,Newer:true});
+  await f.update.tick(since+9000,false);assert.deepEqual(f.calls.at(-1),['launch']);
+});
 test('update intent accepts only a complete native marker for the observed process lifetime',async()=>{
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'CodexUIIntentTest-'));
   try{

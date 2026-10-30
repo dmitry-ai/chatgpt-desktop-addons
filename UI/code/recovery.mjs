@@ -137,8 +137,12 @@ export class UpdateRecovery {
     try{
       const current=await this.probe();if(this.stopped)return;
       if(this.failed){
-        if(uiReady){this.failed=false;this.pending=null;this.previous=current;this.status={state:'watching',lastError:this.status.error};}
-        return;
+        if(uiReady){this.failed=false;this.pending=null;this.previous=current;this.status={state:'watching',lastError:this.status.error};return;}
+        if(current&&(!this.pending||current.Pid!==this.pending.origin.Pid||current.StartTicks!==this.pending.origin.StartTicks)){
+          const nextIntent=await this.intent(current,now);
+          if(nextIntent&&!this.handled.has(nextIntent.at)){this.failed=false;this.pending=null;this.previous=current;}
+          else return;
+        }else return;
       }
       // Inspect the previous process's final records even after it has exited.
       if(!this.pending&&this.previous){
@@ -161,8 +165,10 @@ export class UpdateRecovery {
         };
         const before=version(task.origin.Package),after=version(current.Package);
         const difference=after.map((n,i)=>n-before[i]).find(n=>n!==0)??0;
-        if(difference<=0)throw Error('The updater reopened an older or unchanged package; automatic recovery stopped');
-        if(current.HasDebugPort){
+        if(difference<0||(difference===0&&(task.restarted||current.HasDebugPort))){
+          throw Error('The updater reopened an older or unchanged package; automatic recovery stopped');
+        }
+        if(difference>0&&current.HasDebugPort){
           if(uiReady){this.status={state:'verified',pid:current.Pid,package:current.Package};this.previous=current;this.pending=null;await this.log('Updated C1 verified: new package and Folders/CSS connected');}
           else this.status={state:'waiting-for-ui',pid:current.Pid};
           return;
@@ -189,7 +195,8 @@ export class UpdateRecovery {
       task.launched=true;
       const pid=await this.launch();this.status={state:'waiting-for-ui',pid};
     }catch(error){
-      this.failed=true;this.status={state:'error',error:error.message};await this.log('C1 update recovery stopped: '+error.message);
+      if(this.pending)this.failed=true;
+      this.status={state:'error',error:error.message};await this.log('C1 update recovery stopped: '+error.message);
     }
   }
   get handling(){return !!this.pending&&!this.failed;}

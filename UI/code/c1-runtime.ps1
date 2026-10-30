@@ -5,41 +5,35 @@ $ProgressPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 function Prepare-CodexUpdate {
     param([string]$OriginPackage)
-    $family = [CodexPackage]::Family
-    $current = Get-AppxPackage -Name OpenAI.Codex | Where-Object { $_.PackageFamilyName -eq $family } |
-        Sort-Object Version -Descending | Select-Object -First 1
-    if (-not $current) { throw 'Codex is not registered for this user.' }
-    $administrator = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
-        [Security.Principal.WindowsBuiltInRole]::Administrator)
-    $available = if ($administrator) { @(Get-AppxPackage -Name OpenAI.Codex -AllUsers) } else { @($current) }
-    $candidate = $available | Where-Object {
-        $_.PackageFamilyName -eq $family -and $_.Status -eq 'Ok' -and [version]$_.Version -gt [version]$current.Version
-    } | Sort-Object Version -Descending | Select-Object -First 1
-    if (-not $candidate -and [CodexPackage]::NeedsRegistration($current.PackageFullName)) {
-        $candidate = $current
+    $installed = @([CodexPackage]::SelectCandidates([CodexPackage]::Installed(), $null))
+    $available = @([CodexPackage]::SelectCandidates([CodexPackage]::Available(), $null))
+    if ($installed.Count -eq 0 -and $available.Count -eq 0) { throw 'Codex is not registered for this user.' }
+    $current = if ($installed.Count -gt 0) { $installed[0] } else { $null }
+    $best = if ($available.Count -gt 0) { $available[0] } else { $current }
+    $candidate = $null
+    if ($null -eq $current -or $best.Version -gt $current.Version -or [CodexPackage]::NeedsRegistration($best.FullName)) {
+        $candidate = $best
     }
     $inUse = @([C1Runtime]::PackageProcesses())
     $deferred = $false
     if ($candidate) {
         # Never force another profile or an active UI window to close. When no
         # interactive Codex UI process is open, clean up any orphaned container
-        # descendants and complete registration synchronously.
+        # descendants and complete registration of the highest available version.
         if ($inUse.Count -eq 0) {
-            [CodexPackage]::StopOrphanContainerProcesses($null)
-            $manifest = Join-Path $candidate.InstallLocation 'AppxManifest.xml'
-            Add-AppxPackage -Register $manifest -DisableDevelopmentMode -ForceApplicationShutdown -ForceUpdateFromAnyVersion
-            $current = Get-AppxPackage -Name OpenAI.Codex | Where-Object { $_.PackageFamilyName -eq $family } |
-                Sort-Object Version -Descending | Select-Object -First 1
-            $deferred = ([version]$current.Version -lt [version]$candidate.Version) -or [CodexPackage]::NeedsRegistration($current.PackageFullName)
+            [CodexPackage]::EnsureRegistered($candidate, $null) | Out-Null
+            $installed = @([CodexPackage]::SelectCandidates([CodexPackage]::Installed(), $null))
+            $current = if ($installed.Count -gt 0) { $installed[0] } else { $current }
+            $deferred = ($null -eq $current) -or ($current.Version -lt $candidate.Version) -or [CodexPackage]::NeedsRegistration($current.FullName)
         } else { $deferred = $true }
     }
     $newer = $false
     if ($OriginPackage) {
         if ($OriginPackage -notmatch '^OpenAI\.Codex_(\d+\.\d+\.\d+\.\d+)_') { throw 'Invalid original package identity.' }
-        $newer = [version]$current.Version -gt [version]$Matches[1]
+        $newer = ($null -ne $current) -and ($current.Version -gt [version]$Matches[1])
     }
-    return @{RegisteredPackage=$current.PackageFullName;PendingPackage=if($deferred){$candidate.PackageFullName}else{$null};
-        Ready=(-not $deferred);Newer=$newer;RunningProcesses=$inUse;PreparationAvailable=$administrator}
+    return @{RegisteredPackage=if($current){$current.FullName}else{$null};PendingPackage=if($deferred){$candidate.FullName}else{$null};
+        Ready=(-not $deferred);Newer=$newer;RunningProcesses=$inUse;PreparationAvailable=$true}
 }
 try {
     $packageSource = Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'Multi-Account\code\CodexPackage.cs'
