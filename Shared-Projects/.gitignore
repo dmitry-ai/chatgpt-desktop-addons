@@ -1,2 +1,5 @@
+# 2026-10-15 Dmitrii Fediuk https://github.com/dmitrii-fediuk
+# "Synchronize workspace projects and folder catalog between C1 and C2 with trust-free replica restore (Shared-Projects)":
+# https://github.com/dmitry-ai/chatgpt-desktop-addons/issues/7
 state/
 *.log

@@ -1,100 +1,99 @@
-/* Compact window edges and project sidebar. The app's Zoom setting is left intact. */
+/* 2026-10-15 Dmitrii Fediuk https://github.com/dmitrii-fediuk
+	* "Implement sidebar project folder hierarchy (Folders), context menus, compact panel styling (CSS), and background CDP injection daemon (UI)":
+	* https://github.com/dmitry-ai/chatgpt-desktop-addons/issues/6 */
 [data-app-shell-frame][data-app-shell-feature-navigation=true] {
-  --cui-edge-toolbar: 26px;
-  --cui-rail-width: 32px;
-  --cui-header-height: 30px;
-  --app-shell-navigation-rail-width: var(--cui-rail-width) !important;
-  --sidebar-navigation-header-height: var(--cui-header-height) !important;
-  --app-shell-titlebar-height: 2px !important;
-  --app-shell-titlebar-top-inset: 2px !important;
-  --app-shell-header-height: var(--cui-header-height) !important;
+	--cui-edge-toolbar: 26px;
+	--cui-rail-width: 32px;
+	--cui-header-height: 30px;
+	--app-shell-navigation-rail-width: var(--cui-rail-width) !important;
+	--sidebar-navigation-header-height: var(--cui-header-height) !important;
+	--app-shell-titlebar-height: 2px !important;
+	--app-shell-titlebar-top-inset: 2px !important;
+	--app-shell-header-height: var(--cui-header-height) !important;
 }
-/* Keep the native menu, its buttons and the window drag region. */
 [data-app-shell-frame] > div:has(> [role=menubar]) {
-  height: var(--cui-edge-toolbar,26px) !important;
-  min-height: var(--cui-edge-toolbar,26px);
-  padding-inline-start: 2px !important;
+	height: var(--cui-edge-toolbar,26px) !important;
+	min-height: var(--cui-edge-toolbar,26px);
+	padding-inline-start: 2px !important;
 }
 [data-app-shell-frame] > div:has(> [role=menubar]) > div { gap: 2px !important; }
 [data-app-shell-frame] > div:has(> [role=menubar]) button[data-uniform] {
-  width: 24px !important; min-width: 24px !important; height: 24px !important;
+	width: 24px !important; min-width: 24px !important; height: 24px !important;
 }
 [data-app-shell-frame] > div:has(> [role=menubar]) [role=menubar] {
-  padding-inline: 2px !important; gap: 0 !important;
+	padding-inline: 2px !important; gap: 0 !important;
 }
 [data-app-shell-frame] > div:has(> [role=menubar]) [role=menuitem] {
-  font-size: 12px !important; padding: 4px 7px !important;
+	font-size: 12px !important; padding: 4px 7px !important;
 }
 [data-app-navigation-rail] {
-  box-sizing: border-box;
-  width: var(--cui-rail-width,32px) !important;
-  padding: 2px !important; gap: 2px !important;
+	box-sizing: border-box;
+	width: var(--cui-rail-width,32px) !important;
+	padding: 2px !important; gap: 2px !important;
 }
 [data-app-navigation-rail] [data-appearance] { gap: 2px !important; }
 [data-app-navigation-rail] > [data-appearance] {
-  width: 28px; margin: 0 !important; padding: 0 !important;
+	width: 28px; margin: 0 !important; padding: 0 !important;
 }
 [data-app-navigation-rail] button[data-uniform] {
-  width: 28px !important; min-width: 28px !important; height: 28px !important;
-  min-height: 28px !important; padding: 0 !important;
+	width: 28px !important; min-width: 28px !important; height: 28px !important;
+	min-height: 28px !important; padding: 0 !important;
 }
 [data-app-navigation-rail] button[data-uniform] svg { max-width: 18px; max-height: 18px; }
 [data-app-navigation-rail] > :last-child { width: 28px !important; }
-[data-app-navigation-rail] [aria-label="Open profile menu"] img,
-[data-app-navigation-rail] [aria-label="Open profile menu"] [class*=rounded-full] {
-  max-width: 24px; max-height: 24px; font-size: 12px;
+[data-app-navigation-rail] [aria-label='Open profile menu'] img,
+[data-app-navigation-rail] [aria-label='Open profile menu'] [class*=rounded-full] {
+	max-width: 24px; max-height: 24px; font-size: 12px;
 }
 #app-shell-sidebar .sidebar-navigation [role=navigation] > :first-child {
-  padding-inline: 4px !important;
+	padding-inline: 4px !important;
 }
 #app-shell-sidebar .sidebar-navigation [role=navigation] > :first-child > :first-child {
-  margin-inline-start: 2px !important;
+	margin-inline-start: 2px !important;
 }
 #app-shell-sidebar .sidebar-navigation [role=navigation] > :first-child > [data-appearance] {
-  margin-bottom: 2px !important;
+	margin-bottom: 2px !important;
 }
 #app-shell-sidebar .sidebar-navigation [role=navigation] > :first-child button[data-size] {
-  height: 26px !important; min-height: 0 !important;
+	height: 26px !important; min-height: 0 !important;
 }
 #app-shell-sidebar .sidebar-navigation [role=navigation] > :first-child .sidebar-item {
-  height: 22px !important; min-height: 22px !important; padding-block: 0 !important;
+	height: 22px !important; min-height: 22px !important; padding-block: 0 !important;
 }
 #app-shell-sidebar .sidebar-navigation [role=navigation] > :first-child .sidebar-item .text-base {
-  font-size: 12px !important; line-height: 16px !important;
+	font-size: 12px !important; line-height: 16px !important;
 }
 #app-shell-sidebar .sidebar-navigation [role=navigation] > :first-child .sidebar-item svg {
-  max-width: 16px; max-height: 16px;
+	max-width: 16px; max-height: 16px;
 }
-/* Hide the section AND its flex item: no invisible Recents-sized gap remains. */
 [data-app-action-sidebar-scroll] [data-app-action-sidebar-section-heading=Recents],
 [data-app-action-sidebar-scroll] div:has(> [data-app-action-sidebar-section-heading=Recents]) {
-  display: none !important;
+	display: none !important;
 }
 [data-app-action-sidebar-scroll] { gap: 4px !important; padding-block: 2px !important; }
 [data-app-action-sidebar-scroll] div:has(> [data-app-action-sidebar-section] [data-app-action-sidebar-project-create]) {
-  display: flex; flex-direction: column; flex: 1 0 auto; min-height: 0;
+	display: flex; flex-direction: column; flex: 1 0 auto; min-height: 0;
 }
 [data-app-action-sidebar-section]:has([data-app-action-sidebar-project-create]) {
-  display: flex; flex-direction: column; flex: 1 0 auto;
+	display: flex; flex-direction: column; flex: 1 0 auto;
 }
 [data-app-action-sidebar-section]:has([data-app-action-sidebar-project-create]) > div { flex: 1 0 auto; }
-
 [data-app-action-sidebar-section] {
-  --height-token-row: 18px;
-  --height-token-nav-row: 18px;
-  --cui-indent: 14px;
-  --cui-row: 18px;
-  font-size: 12px;
-  line-height: 14px;
+	--height-token-row: 18px;
+	--height-token-nav-row: 18px;
+	--cui-indent: 14px;
+	--cui-row: 18px;
+	font-size: 12px;
+	line-height: 14px;
 }
 [data-app-action-sidebar-project-row],
 [data-app-action-sidebar-thread-row] {
-  min-height: var(--height-token-row) !important;
-  height: var(--height-token-row) !important;
-  font-size: 12px !important;
-  line-height: 14px !important;
-  padding-block: 0 !important;
-  content-visibility: visible !important;
+	min-height: var(--height-token-row) !important;
+	height: var(--height-token-row) !important;
+	font-size: 12px !important;
+	line-height: 14px !important;
+	padding-block: 0 !important;
+	content-visibility: visible !important;
 }
 [data-app-action-sidebar-project-row] .text-base,
 [data-app-action-sidebar-project-row] [data-marquee-content],
@@ -115,14 +114,21 @@
 [data-cui-project]::after { display: none !important; }
 [data-cui-hidden] { display: none !important; }
 [data-cui-project-row] { position: relative; }
-[data-cui-project-row] > div:has(button[aria-haspopup=menu]),
+/* 2026-10-31 Dmitrii Fediuk https://github.com/dmitrii-fediuk
+	* "Fix \"More project actions…\" context menu item by dispatching pointerdown and preserving trigger layout box":
+	* https://github.com/dmitry-ai/chatgpt-desktop-addons/issues/17 */
+[data-cui-project-row] > div:has(button[aria-haspopup=menu]) {
+	position: absolute !important; inset-inline-start: 0 !important; top: 0 !important;
+	width: 0 !important; height: 100% !important; overflow: hidden !important;
+	opacity: 0 !important; pointer-events: none !important;
+}
 .cui-assign { display: none !important; }
 .cui-root { display: contents; }
 .cui-folder {
-  order: var(--cui-order); display: flex; align-items: center; gap: 1px;
-  height: var(--cui-row); min-height: var(--cui-row); flex-shrink: 0;
-  margin-inline-start: calc(var(--cui-depth) * var(--cui-indent));
-  border-radius: 4px; color: inherit; font: inherit;
+	order: var(--cui-order); display: flex; align-items: center; gap: 1px;
+	height: var(--cui-row); min-height: var(--cui-row); flex-shrink: 0;
+	margin-inline-start: calc(var(--cui-depth) * var(--cui-indent));
+	border-radius: 4px; color: inherit; font: inherit;
 }
 .cui-folder:hover { background: color-mix(in srgb,currentColor 6%,transparent); }
 .cui-folder-toggle { display:flex;align-items:center;gap:3px;min-width:0;flex:1;height:100%;text-align:start; }
@@ -135,14 +141,12 @@
 .cui-icon-button { display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;flex-shrink:0; }
 .cui-folder-actions { display:none !important; }
 .cui-context-menu {
-  position:fixed;z-index:2147483601;min-width:200px;max-width:calc(100vw - 16px);max-height:calc(100vh - 16px);overflow:auto;
-  border:1px solid #ccc;border-radius:8px;padding:4px;background:#fff;color:#222;box-shadow:0 8px 30px #0003;font:12px/1.4 system-ui;
+	position:fixed;z-index:2147483601;min-width:200px;max-width:calc(100vw - 16px);max-height:calc(100vh - 16px);overflow:auto;
+	border:1px solid #ccc;border-radius:8px;padding:4px;background:#fff;color:#222;box-shadow:0 8px 30px #0003;font:12px/1.4 system-ui;
 }
 .dark .cui-context-menu,[data-theme=dark] .cui-context-menu { background:#242424;color:#eee;border-color:#555; }
 .cui-context-item { display:block;width:100%;padding:6px 9px;text-align:start;white-space:nowrap; }
-/* Sidebar hover previews must not cover the chat while the pointer passes over rows. */
 [role=tooltip][data-overlay-owner=slate-sidebar] { display:none !important;pointer-events:none !important; }
-/* Remove the empty-chat artwork and title, including the reserved space above the composer. */
 div:has(> div > [data-testid=home-icon]) { display:none !important; }
 div.relative.flex:has(> div[aria-hidden] [data-testid=home-icon]) { flex-grow:0 !important;flex-basis:auto !important;min-height:0 !important;padding-bottom:0 !important; }
 .cui-toolbar { display:inline-flex;align-items:center;margin-inline-start:auto; }

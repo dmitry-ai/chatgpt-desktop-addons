@@ -1,29 +1,46 @@
+# 2026-10-17 Dmitrii Fediuk https://github.com/dmitrii-fediuk
+# "Register staged MSIX updates in c1-runtime.ps1 and activate C1 on WinSta0\Default via IApplicationActivationManager":
+# https://github.com/dmitry-ai/chatgpt-desktop-addons/issues/10
 param([switch]$AllowAppActivation)
 $ErrorActionPreference = 'Stop'
 $temporaryParent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
 $testName = 'CodexUIRecovery-' + [Guid]::NewGuid().ToString('N')
 $testRoot = Join-Path $temporaryParent $testName
 try {
-    New-Item -ItemType Directory -Path $testRoot | Out-Null
-    $program = Join-Path $testRoot 'RecoveryNativeTests.exe'
-    $packageSource = Join-Path (Split-Path $PSScriptRoot -Parent) 'Multi-Account\CodexPackage.cs'
-    & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /platform:x64 /target:exe /main:RecoveryNativeTests `
-        /reference:System.Xml.Linq.dll /reference:System.Management.dll /reference:System.Windows.Forms.dll /reference:System.Drawing.dll `
-        "/out:$program" $packageSource (Join-Path $PSScriptRoot 'C1Runtime.cs') (Join-Path $PSScriptRoot 'RecoveryNativeTests.cs')
-    if ($LASTEXITCODE -ne 0) { throw 'Native recovery test compilation failed.' }
-    $testArguments = @()
-    if ($AllowAppActivation) { $testArguments += '--allow-app-activation' }
-    & $program @testArguments
-    if ($LASTEXITCODE -ne 0) { throw 'Native recovery tests failed.' }
-} finally {
-    $resolvedTestRoot = [IO.Path]::GetFullPath($testRoot)
-    if ([IO.Path]::GetDirectoryName($resolvedTestRoot) -ne $temporaryParent -or [IO.Path]::GetFileName($resolvedTestRoot) -ne $testName) {
-        throw 'Unexpected temporary test path.'
-    }
-    if (Test-Path -LiteralPath $resolvedTestRoot) {
-        try { Add-Type -AssemblyName Microsoft.VisualBasic } catch { Add-Type -AssemblyName Microsoft.VisualBasic.Core }
-        [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($resolvedTestRoot,
-            [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs,
-            [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin)
-    }
+	New-Item -ItemType Directory -Path $testRoot | Out-Null
+	$program = Join-Path $testRoot 'RecoveryNativeTests.exe'
+	$packageSource = Join-Path (Split-Path $PSScriptRoot -Parent) 'Multi-Account\CodexPackage.cs'
+	& "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /platform:x64 /target:exe /main:RecoveryNativeTests `
+		/reference:System.Xml.Linq.dll /reference:System.Management.dll /reference:System.Windows.Forms.dll /reference:System.Drawing.dll `
+		"/out:$program" $packageSource (Join-Path $PSScriptRoot 'C1Runtime.cs') (Join-Path $PSScriptRoot 'RecoveryNativeTests.cs')
+	if (0 -ne $LASTEXITCODE) {
+		throw 'Native recovery test compilation failed.'
+	}
+	$testArguments = @()
+	if ($AllowAppActivation) {
+		$testArguments += '--allow-app-activation'
+	}
+	& $program @testArguments
+	if (0 -ne $LASTEXITCODE) {
+		throw 'Native recovery tests failed.'
+	}
+}
+finally {
+	$resolvedTestRoot = [IO.Path]::GetFullPath($testRoot)
+	if ([IO.Path]::GetDirectoryName($resolvedTestRoot) -ne $temporaryParent -or [IO.Path]::GetFileName($resolvedTestRoot) -ne $testName) {
+		throw 'Unexpected temporary test path.'
+	}
+	if (Test-Path -LiteralPath $resolvedTestRoot) {
+		try {
+			Add-Type -AssemblyName Microsoft.VisualBasic
+		}
+		catch {
+			Add-Type -AssemblyName Microsoft.VisualBasic.Core
+		}
+		[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory(
+			$resolvedTestRoot,
+			[Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs,
+			[Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin
+		)
+	}
 }

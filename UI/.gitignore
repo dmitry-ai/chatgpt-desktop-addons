@@ -1,3 +1,6 @@
+# 2026-10-15 Dmitrii Fediuk https://github.com/dmitrii-fediuk
+# "Implement sidebar project folder hierarchy (Folders), context menus, compact panel styling (CSS), and background CDP injection daemon (UI)":
+# https://github.com/dmitry-ai/chatgpt-desktop-addons/issues/6
 ui.log
 node-path.txt
 state/

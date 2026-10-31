@@ -1,3 +1,6 @@
+# 2026-10-28 Dmitrii Fediuk https://github.com/dmitrii-fediuk
+# "Extract ChatGPT Desktop Addons into standalone repository and unify 10 journals into single sequential Journal":
+# https://github.com/dmitry-ai/chatgpt-desktop-addons/issues/13
 *.exe
 *.log
 node-path.txt
