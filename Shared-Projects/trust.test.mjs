@@ -1,3 +1,6 @@
+// 2026-11-19 Dmitrii Fediuk https://github.com/dmitrii-fediuk
+// "Support path registry template expansion in Shared-Projects TrustPolicy":
+// https://github.com/dmitry-ai/chatgpt-desktop-addons/issues/18
 // 2026-10-17 Dmitrii Fediuk https://github.com/dmitrii-fediuk
 // "Add C1 post-update UI recovery, DWM freeze resilience, and idempotent external project registration with auto-trust policy":
 // https://github.com/dmitry-ai/chatgpt-desktop-addons/issues/9
@@ -5,7 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import {TrustPolicy, ensureTrustedRoots} from './trust.mjs';
+import {TrustPolicy, ensureTrustedRoots, expandPathTemplate} from './trust.mjs';
 import {stateDirectory} from './catalog.mjs';
 import {findMessageBusImport, configRequest} from './desktop.mjs';
 const root = 'C:\\work\\upwork\\code\\proposals\\daily\\2026\\10\\16\\1 - a.b';
@@ -142,4 +145,26 @@ test('policy scope comes from runtime and rejects traversal, non-directories and
 	await assert.rejects(service.prepare({...spec, rootPaths: [link]}), /TRUST_POLICY/);
 	await assert.rejects(service.prepare({...spec, trustPolicy: 'arbitrary'}), /TRUST_POLICY/);
 	assert.deepEqual(await service.prepare({rootPaths: [outside]}), {rootPaths: [outside]});
+	const pathsFile = path.join(dir, 'paths.json');
+	await fs.writeFile(pathsFile, JSON.stringify({version: 1, variables: {BASE_DIR: dir.replaceAll('\\', '/'), UPWORK_ROOT: '${BASE_DIR}', UPWORK_DAILY_REL: 'daily'}}));
+	await fs.writeFile(runtime, JSON.stringify({paths_registry: 'paths.json', workspace_root: '${UPWORK_ROOT}', daily_root: '${UPWORK_DAILY_REL}'}));
+	assert.deepEqual(await service.prepare(spec), spec);
+});
+test('expandPathTemplate preserves UNC prefixes, escapes, Apache prefix concatenation, and literal $ in env values', () => {
+	const vars = {
+		WORK_ROOT: 'C:/work',
+		DF_CLIENTS: '${WORK_ROOT}/clients/',
+		UNC_BASE: '//fileserver/share/',
+		LIT_A: '$${LITERAL}',
+		LIT_B: '${LIT_A}/sub'
+	};
+	const env = {WEIRD_ENV: 'C:\\Users\\a${INJECT}%PCT%'};
+	assert.equal(expandPathTemplate('${DF_CLIENTS}smokeday.com/m/2026-10-26/code', vars, {env}), 'C:/work/clients/smokeday.com/m/2026-10-26/code');
+	assert.equal(expandPathTemplate('${UNC_BASE}upwork//daily/', vars, {env}), '//fileserver/share/upwork/daily');
+	assert.equal(expandPathTemplate('%WEIRD_ENV%/tail', vars, {env}), 'C:/Users/a${INJECT}%PCT%/tail');
+	assert.equal(expandPathTemplate('${ENV:WEIRD_ENV}/tail', vars, {env}), 'C:/Users/a${INJECT}%PCT%/tail');
+	assert.equal(expandPathTemplate('${LIT_B}/100%%', vars, {env}), '${LITERAL}/sub/100%');
+	assert.ok(expandPathTemplate('%LOCALAPPDATA%/Codex', {}, {env: {}}).endsWith('/AppData/Local/Codex'));
+	assert.throws(() => expandPathTemplate('${A}', {A: '${B}', B: '${A}'}, {env}), /TRUST_POLICY/);
+	assert.throws(() => expandPathTemplate('C:/work/${UNCLOSED', vars, {env}), /TRUST_POLICY/);
 });

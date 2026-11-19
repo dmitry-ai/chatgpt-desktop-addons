@@ -1,9 +1,111 @@
+// 2026-11-19 Dmitrii Fediuk https://github.com/dmitrii-fediuk
+// "Support path registry template expansion in Shared-Projects TrustPolicy":
+// https://github.com/dmitry-ai/chatgpt-desktop-addons/issues/18
 // 2026-10-17 Dmitrii Fediuk https://github.com/dmitrii-fediuk
 // "Add C1 post-update UI recovery, DWM freeze resilience, and idempotent external project registration with auto-trust policy":
 // https://github.com/dmitry-ai/chatgpt-desktop-addons/issues/9
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
+const ESC_DOLLAR = '\0HARNESS_DOLLAR_LBRACE\0';
+const ESC_PCT = '\0HARNESS_PERCENT\0';
+const VAR_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const TOKEN_RE = /\$\$\{|%%|\$\{([^}]*)\}|%([A-Za-z_][A-Za-z0-9_]*)%/g;
+function lookupEnv(name, env) {
+	const upper = name.toUpperCase();
+	const hit = Object.entries(env ?? {}).find(([k, v]) => k.toUpperCase() === upper && String(v ?? '').trim());
+	if (hit) {
+		return String(hit[1]).replaceAll('\\', '/');
+	}
+	const home = os.homedir().replaceAll('\\', '/').replace(/\/+$/, '');
+	if ('USERPROFILE' === upper || 'HOME' === upper) {
+		return home;
+	}
+	if ('APPDATA' === upper) {
+		return `${home}/AppData/Roaming`;
+	}
+	if ('LOCALAPPDATA' === upper) {
+		return `${home}/AppData/Local`;
+	}
+	if ('PROGRAMFILES' === upper) {
+		return 'C:/Program Files';
+	}
+	if ('SYSTEMROOT' === upper || 'WINDIR' === upper) {
+		return 'C:/Windows';
+	}
+	return null;
+}
+function normalizeExpandedPath(raw, preserveTrailingSlash = false) {
+	if (!raw) {
+		return raw;
+	}
+	const hadTrailing = raw.endsWith('/') || raw.endsWith('\\');
+	const text = raw.replaceAll('\\', '/');
+	const isUnc = text.startsWith('//') && !text.startsWith('///');
+	const body = isUnc ? text.slice(2) : text;
+	let collapsed = (isUnc ? '//' : '') + body.replace(/\/{2,}/g, '/');
+	if (!preserveTrailingSlash && collapsed.length > 1 && !/^[A-Za-z]:\/$/.test(collapsed) && '//' !== collapsed) {
+		collapsed = collapsed.replace(/\/+$/, '');
+	}
+	else if (preserveTrailingSlash && hadTrailing && !collapsed.endsWith('/')) {
+		collapsed += '/';
+	}
+	return collapsed;
+}
+export function expandPathTemplate(raw, vars, {env = process.env, _seen = new Set()} = {}) {
+	if ('string' !== typeof raw || (!raw.includes('$') && !raw.includes('%'))) {
+		return 'string' === typeof raw ? (0 === _seen.size ? normalizeExpandedPath(raw, false) : raw) : raw;
+	}
+	const unclosedCheck = raw.replaceAll('$${', '');
+	if (unclosedCheck.includes('${') && !/\$\{[^}]*\}/.test(unclosedCheck)) {
+		throw Error('TRUST_POLICY: unclosed template variable in ' + raw);
+	}
+	const expanded = raw.replace(TOKEN_RE, (full, braced, pct) => {
+		if ('$${' === full) {
+			return ESC_DOLLAR;
+		}
+		if ('%%' === full) {
+			return ESC_PCT;
+		}
+		if (undefined !== pct) {
+			const val = lookupEnv(pct, env);
+			if (null === val) {
+				throw Error('TRUST_POLICY: unresolved env variable %' + pct + '%');
+			}
+			return val.replaceAll('${', ESC_DOLLAR).replaceAll('%', ESC_PCT);
+		}
+		const expr = (braced ?? '').trim();
+		if (expr.toUpperCase().startsWith('ENV:')) {
+			const envName = expr.slice(4).trim();
+			if (!VAR_RE.test(envName)) {
+				throw Error('TRUST_POLICY: invalid env variable ${' + braced + '}');
+			}
+			const val = lookupEnv(envName, env);
+			if (null === val) {
+				throw Error('TRUST_POLICY: unresolved env variable ${' + braced + '}');
+			}
+			return val.replaceAll('${', ESC_DOLLAR).replaceAll('%', ESC_PCT);
+		}
+		if (!VAR_RE.test(expr)) {
+			throw Error('TRUST_POLICY: invalid template variable ${' + braced + '}');
+		}
+		if (_seen.has(expr) || 'string' !== typeof vars?.[expr]) {
+			throw Error('TRUST_POLICY: unresolved template variable ${' + expr + '}');
+		}
+		const next = new Set(_seen);
+		next.add(expr);
+		return normalizeExpandedPath(expandPathTemplate(vars[expr], vars, {env, _seen: next}), true);
+	});
+	if (expanded.replaceAll(ESC_DOLLAR, '').includes('${')) {
+		throw Error('TRUST_POLICY: malformed template variable in ' + raw);
+	}
+	if (0 < _seen.size) {
+		return expanded;
+	}
+	const unescaped = expanded.replaceAll(ESC_DOLLAR, '${').replaceAll(ESC_PCT, '%');
+	return normalizeExpandedPath(unescaped, false);
+}
 export class TrustPolicy {
 	constructor(file = fileURLToPath(new URL('./trust-policy.json', import.meta.url))) {
 		this.file = file;
@@ -15,11 +117,19 @@ export class TrustPolicy {
 			}
 			const policy = JSON.parse(await fs.readFile(this.file, 'utf8'));
 			const runtime = JSON.parse(await fs.readFile(policy.upworkRuntime, 'utf8'));
-			if (!path.isAbsolute(runtime.workspace_root) || !runtime.daily_root || path.isAbsolute(runtime.daily_root)) {
+			let vars = {};
+			if ([runtime.workspace_root, runtime.daily_root].some(v => 'string' === typeof v && (v.includes('${') || v.includes('%')))) {
+				const regFile = path.resolve(path.dirname(policy.upworkRuntime), runtime.paths_registry || 'paths.json');
+				const reg = JSON.parse(await fs.readFile(regFile, 'utf8'));
+				vars = reg?.variables ?? {};
+			}
+			const workspaceRoot = expandPathTemplate(runtime.workspace_root, vars);
+			const dailyRoot = expandPathTemplate(runtime.daily_root, vars);
+			if (!path.isAbsolute(workspaceRoot) || !dailyRoot || path.isAbsolute(dailyRoot)) {
 				throw Error('TRUST_POLICY: invalid daily directory');
 			}
-			const daily = path.resolve(runtime.workspace_root, runtime.daily_root);
-			const relativeDaily = path.relative(runtime.workspace_root, daily);
+			const daily = path.resolve(workspaceRoot, dailyRoot);
+			const relativeDaily = path.relative(workspaceRoot, daily);
 			if (!relativeDaily || '..' === relativeDaily || relativeDaily.startsWith('..' + path.sep) || path.isAbsolute(relativeDaily)) {
 				throw Error('TRUST_POLICY: daily is outside workspace');
 			}
