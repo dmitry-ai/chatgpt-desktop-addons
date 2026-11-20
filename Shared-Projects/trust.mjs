@@ -1,4 +1,7 @@
 // 2026-11-20 Dmitrii Fediuk https://github.com/dmitrii-fediuk
+// "Add Ⰿ/≻/♕/⛯ registry candidate and relocated ⛯ primary support in trust.mjs":
+// https://github.com/dmitry-ai/chatgpt-desktop-addons/issues/22
+// 2026-11-20 Dmitrii Fediuk https://github.com/dmitrii-fediuk
 // "Resolve upworkRuntime templates from Harness paths.json and accept relocated V1 manifests":
 // https://github.com/dmitry-ai/chatgpt-desktop-addons/issues/20
 // 2026-11-19 Dmitrii Fediuk https://github.com/dmitrii-fediuk
@@ -124,7 +127,7 @@ export async function resolveUpworkRuntime(policyFile, {env = process.env} = {})
 	else if (policy.upworkRuntime.includes('$') || policy.upworkRuntime.includes('%')) {
 		for (let cur = baseDir; ; cur = path.dirname(cur)) {
 			const harnessRoot = path.join(cur, 'harness');
-			for (const rel of ['Artifacts/\u227b/Deliverables/\u26ef/paths.json', 'code/paths.json']) {
+			for (const rel of ['\u2c0f/\u227b/\u2655/\u26ef/paths.json', 'Artifacts/\u227b/Deliverables/\u26ef/paths.json', 'code/paths.json']) {
 				const cand = path.join(harnessRoot, rel);
 				try {
 					if ((await fs.stat(cand)).isFile()) {
@@ -165,7 +168,7 @@ export async function resolveUpworkRuntime(policyFile, {env = process.env} = {})
 			try {
 				const oldExpanded = expandPathTemplate(oldTpl, vars, {env});
 				const newExpanded = expandPathTemplate(newTpl, vars, {env});
-				if (newExpanded === harnessRootNorm && oldExpanded.endsWith('/code')) {
+				if (newExpanded === harnessRootNorm && (oldExpanded.endsWith('/code') || oldExpanded.endsWith('/\u26ef'))) {
 					relocatedPrimaries.push(oldExpanded);
 				}
 			}

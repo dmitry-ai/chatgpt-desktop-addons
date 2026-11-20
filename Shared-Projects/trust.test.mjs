@@ -1,4 +1,7 @@
 // 2026-11-20 Dmitrii Fediuk https://github.com/dmitrii-fediuk
+// "Add Ⰿ/≻/♕/⛯ registry candidate and relocated ⛯ primary support in trust.mjs":
+// https://github.com/dmitry-ai/chatgpt-desktop-addons/issues/22
+// 2026-11-20 Dmitrii Fediuk https://github.com/dmitrii-fediuk
 // "Resolve upworkRuntime templates from Harness paths.json and accept relocated V1 manifests":
 // https://github.com/dmitry-ai/chatgpt-desktop-addons/issues/20
 // 2026-11-19 Dmitrii Fediuk https://github.com/dmitrii-fediuk
@@ -10,6 +13,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import {TrustPolicy, ensureTrustedRoots, expandPathTemplate, resolveUpworkRuntime} from './trust.mjs';
 import {stateDirectory} from './catalog.mjs';
@@ -175,4 +179,32 @@ test('resolveUpworkRuntime expands ${HARNESS_RUNTIME_JSON} for live trust-policy
 	const live = await resolveUpworkRuntime();
 	assert.ok((await fs.stat(live.runtimeFile)).isFile());
 	assert.ok(live.relocatedPrimaries.some(item => item.endsWith('/AI/harness/code')));
+});
+test('resolveUpworkRuntime discovers Ⰿ/≻/♕/⛯/paths.json and relocated ⛯ primaries', async context => {
+	const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'cda-v2-symbols-'));
+	context.after(() => fs.rm(tmp, {recursive: true, force: true}));
+	const harnessCode = path.join(tmp, 'AI', 'harness', '\u2c0f', '\u227b', '\u2655', '\u26ef');
+	const policyDir = path.join(tmp, 'AI', 'products', 'OpenAI', 'ChatGPT', 'Desktop', 'Addons', '\u2c0f', '\u227b', '\u2655', '\u26ef', 'Shared-Projects');
+	await fs.mkdir(harnessCode, {recursive: true});
+	await fs.mkdir(policyDir, {recursive: true});
+	const harnessRootPosix = path.join(tmp, 'AI', 'harness').replaceAll('\\', '/');
+	await fs.writeFile(path.join(harnessCode, 'paths.json'), JSON.stringify({
+		version: 1,
+		variables: {
+			HARNESS_ROOT: harnessRootPosix,
+			HARNESS_CODE: '${HARNESS_ROOT}/\u2c0f/\u227b/\u2655/\u26ef',
+			HARNESS_RUNTIME_JSON: '${HARNESS_CODE}/runtime.json'
+		},
+		relocations: {
+			'${HARNESS_ROOT}/code': '${HARNESS_ROOT}',
+			'${HARNESS_ROOT}/Artifacts/\u227b/Deliverables/\u26ef': '${HARNESS_ROOT}'
+		}
+	}), 'utf8');
+	await fs.writeFile(path.join(harnessCode, 'runtime.json'), '{}', 'utf8');
+	const policyFile = path.join(policyDir, 'trust-policy.json');
+	await fs.writeFile(policyFile, JSON.stringify({upworkRuntime: '${HARNESS_RUNTIME_JSON}'}), 'utf8');
+	const resolved = await resolveUpworkRuntime(policyFile);
+	assert.equal(resolved.runtimeFile, path.join(harnessCode, 'runtime.json'));
+	assert.ok(resolved.relocatedPrimaries.includes(`${harnessRootPosix}/code`));
+	assert.ok(resolved.relocatedPrimaries.includes(`${harnessRootPosix}/Artifacts/\u227b/Deliverables/\u26ef`));
 });
