@@ -1,3 +1,6 @@
+// 2026-11-20 Dmitrii Fediuk https://github.com/dmitrii-fediuk
+// "Resolve upworkRuntime templates from Harness paths.json and accept relocated V1 manifests":
+// https://github.com/dmitry-ai/chatgpt-desktop-addons/issues/20
 // 2026-11-19 Dmitrii Fediuk https://github.com/dmitrii-fediuk
 // "Support path registry template expansion in Shared-Projects TrustPolicy":
 // https://github.com/dmitry-ai/chatgpt-desktop-addons/issues/18
@@ -8,7 +11,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import {TrustPolicy, ensureTrustedRoots, expandPathTemplate} from './trust.mjs';
+import {TrustPolicy, ensureTrustedRoots, expandPathTemplate, resolveUpworkRuntime} from './trust.mjs';
 import {stateDirectory} from './catalog.mjs';
 import {findMessageBusImport, configRequest} from './desktop.mjs';
 const root = 'C:\\work\\upwork\\code\\proposals\\daily\\2026\\10\\16\\1 - a.b';
@@ -167,4 +170,9 @@ test('expandPathTemplate preserves UNC prefixes, escapes, Apache prefix concaten
 	assert.ok(expandPathTemplate('%LOCALAPPDATA%/Codex', {}, {env: {}}).endsWith('/AppData/Local/Codex'));
 	assert.throws(() => expandPathTemplate('${A}', {A: '${B}', B: '${A}'}, {env}), /TRUST_POLICY/);
 	assert.throws(() => expandPathTemplate('C:/work/${UNCLOSED', vars, {env}), /TRUST_POLICY/);
+});
+test('resolveUpworkRuntime expands ${HARNESS_RUNTIME_JSON} for live trust-policy.json and lists relocated V1 primary', async () => {
+	const live = await resolveUpworkRuntime();
+	assert.ok((await fs.stat(live.runtimeFile)).isFile());
+	assert.ok(live.relocatedPrimaries.some(item => item.endsWith('/AI/harness/code')));
 });

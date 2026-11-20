@@ -1,3 +1,6 @@
+// 2026-11-20 Dmitrii Fediuk https://github.com/dmitrii-fediuk
+// "Resolve upworkRuntime templates from Harness paths.json and accept relocated V1 manifests":
+// https://github.com/dmitry-ai/chatgpt-desktop-addons/issues/20
 // 2026-10-17 Dmitrii Fediuk https://github.com/dmitrii-fediuk
 // "Add C1 post-update UI recovery, DWM freeze resilience, and idempotent external project registration with auto-trust policy":
 // https://github.com/dmitry-ai/chatgpt-desktop-addons/issues/9
@@ -345,4 +348,30 @@ test('different historical hexadecimal IDs never collapse into a matching numeri
 		assert.deepEqual(f.removed, []);
 		assert.equal(f.store.state.projects[f.spec.sharedId].deleted, undefined);
 	}
+});
+test('initializationState accepts legacy V1 manifests relocated via Harness paths.json', async t => {
+	const f = await legacyFixture(t);
+	const v2Code = path.join(f.dir, 'harness', 'Artifacts', '\u227b', 'Deliverables', '\u26ef');
+	const v1Code = path.join(f.dir, 'harness', 'code');
+	await fs.mkdir(v2Code, {recursive: true});
+	await fs.writeFile(path.join(v2Code, 'runtime.json'), JSON.stringify({paths_registry: 'paths.json', workspace_root: f.dir.replaceAll('\\', '/'), daily_root: 'daily'}));
+	await fs.writeFile(path.join(v2Code, 'paths.json'), JSON.stringify({
+		version: 1,
+		variables: {
+			HARNESS_ROOT: path.join(f.dir, 'harness').replaceAll('\\', '/'),
+			HARNESS_CODE: '${HARNESS_ROOT}/Artifacts/\u227b/Deliverables/\u26ef',
+			HARNESS_RUNTIME_JSON: '${HARNESS_CODE}/runtime.json'
+		},
+		relocations: {
+			'${HARNESS_ROOT}/code': '${HARNESS_ROOT}'
+		}
+	}));
+	for (const kind of ['rules', 'skills', 'agents']) {
+		await fs.writeFile(path.join(f.root, '.agents', kind + '.json'), JSON.stringify({entries: [{path: path.join(v1Code, kind)}]}));
+	}
+	const policyFile = path.join(f.dir, 'v2-trust-policy.json');
+	await fs.writeFile(policyFile, JSON.stringify({pathsRegistry: path.join(v2Code, 'paths.json'), upworkRuntime: '${HARNESS_RUNTIME_JSON}'}));
+	const state = await initializationState(f.root, {policyFile});
+	assert.equal(state.initialized, true);
+	assert.equal(state.job_id, '~123456');
 });

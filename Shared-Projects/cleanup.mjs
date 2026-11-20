@@ -1,3 +1,6 @@
+// 2026-11-20 Dmitrii Fediuk https://github.com/dmitrii-fediuk
+// "Resolve upworkRuntime templates from Harness paths.json and accept relocated V1 manifests":
+// https://github.com/dmitry-ai/chatgpt-desktop-addons/issues/20
 // 2026-10-17 Dmitrii Fediuk https://github.com/dmitrii-fediuk
 // "Add C1 post-update UI recovery, DWM freeze resilience, and idempotent external project registration with auto-trust policy":
 // https://github.com/dmitry-ai/chatgpt-desktop-addons/issues/9
@@ -5,6 +8,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {rootKey, fields, identity} from './catalog.mjs';
+import {resolveUpworkRuntime} from './trust.mjs';
 function workspaceKey(value) {
 	if ('string' !== typeof value || !value) {
 		throw Error('Unknown working directory');
@@ -50,14 +54,17 @@ export async function initializationState(root, {primary, policyFile} = {}) {
 		}
 	}
 	if (!r) {
-		if (!primary) {
-			const policy = JSON.parse(await readUnlinked(policyFile ?? fileURLToPath(new URL('./trust-policy.json', import.meta.url))));
-			primary = path.dirname(policy.upworkRuntime);
+		let primaries = primary ? [primary] : [];
+		if (!primaries.length) {
+			const targetPolicy = policyFile ?? fileURLToPath(new URL('./trust-policy.json', import.meta.url));
+			await readUnlinked(targetPolicy);
+			const resolved = await resolveUpworkRuntime(targetPolicy);
+			primaries = [resolved.primary, ...resolved.relocatedPrimaries];
 		}
 		const agents = path.join(root, '.agents');
 		for (const kind of ['rules', 'skills', 'agents']) {
 			const manifest = JSON.parse(await readUnlinked(path.join(agents, kind + '.json')));
-			const allowed = new Set([workspaceKey(path.resolve(primary, kind))]);
+			const allowed = new Set(primaries.map(item => workspaceKey(path.resolve(item, kind))));
 			if (!Array.isArray(manifest.entries) || !manifest.entries.some(entry => 'string' === typeof entry?.path &&
 				allowed.has(workspaceKey(path.resolve(agents, entry.path))))) {
 				throw Error('Shared manifests of legacy /upwork-init are not confirmed');

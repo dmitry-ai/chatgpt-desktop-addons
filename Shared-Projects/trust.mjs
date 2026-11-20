@@ -1,3 +1,6 @@
+// 2026-11-20 Dmitrii Fediuk https://github.com/dmitrii-fediuk
+// "Resolve upworkRuntime templates from Harness paths.json and accept relocated V1 manifests":
+// https://github.com/dmitry-ai/chatgpt-desktop-addons/issues/20
 // 2026-11-19 Dmitrii Fediuk https://github.com/dmitrii-fediuk
 // "Support path registry template expansion in Shared-Projects TrustPolicy":
 // https://github.com/dmitry-ai/chatgpt-desktop-addons/issues/18
@@ -106,6 +109,71 @@ export function expandPathTemplate(raw, vars, {env = process.env, _seen = new Se
 	const unescaped = expanded.replaceAll(ESC_DOLLAR, '${').replaceAll(ESC_PCT, '%');
 	return normalizeExpandedPath(unescaped, false);
 }
+export async function resolveUpworkRuntime(policyFile, {env = process.env} = {}) {
+	const resolvedPolicy = path.resolve(policyFile ?? fileURLToPath(new URL('./trust-policy.json', import.meta.url)));
+	const baseDir = path.dirname(resolvedPolicy);
+	const policy = JSON.parse((await fs.readFile(resolvedPolicy, 'utf8')).replace(/^\uFEFF/, ''));
+	if ('string' !== typeof policy?.upworkRuntime || !policy.upworkRuntime.trim()) {
+		throw Error('TRUST_POLICY: missing upworkRuntime');
+	}
+	let regFile = '';
+	const explicitReg = policy.pathsRegistry || env?.HARNESS_PATHS_FILE;
+	if (explicitReg) {
+		regFile = path.resolve(baseDir, explicitReg);
+	}
+	else if (policy.upworkRuntime.includes('$') || policy.upworkRuntime.includes('%')) {
+		for (let cur = baseDir; ; cur = path.dirname(cur)) {
+			const harnessRoot = path.join(cur, 'harness');
+			for (const rel of ['Artifacts/\u227b/Deliverables/\u26ef/paths.json', 'code/paths.json']) {
+				const cand = path.join(harnessRoot, rel);
+				try {
+					if ((await fs.stat(cand)).isFile()) {
+						regFile = cand;
+						break;
+					}
+				}
+				catch {}
+			}
+			if (regFile || path.dirname(cur) === cur) {
+				break;
+			}
+		}
+	}
+	let reg = null;
+	let vars = {};
+	if (regFile) {
+		reg = JSON.parse((await fs.readFile(regFile, 'utf8')).replace(/^\uFEFF/, ''));
+		vars = reg?.variables ?? {};
+	}
+	const runtimeRaw = (policy.upworkRuntime.includes('$') || policy.upworkRuntime.includes('%')) ? expandPathTemplate(policy.upworkRuntime, vars, {env}) : policy.upworkRuntime;
+	const runtimeFile = path.resolve(baseDir, runtimeRaw);
+	const primary = path.dirname(runtimeFile);
+	if (!reg) {
+		const siblingReg = path.join(primary, 'paths.json');
+		try {
+			if ((await fs.stat(siblingReg)).isFile()) {
+				reg = JSON.parse((await fs.readFile(siblingReg, 'utf8')).replace(/^\uFEFF/, ''));
+				vars = reg?.variables ?? {};
+			}
+		}
+		catch {}
+	}
+	const relocatedPrimaries = [];
+	if (reg?.relocations && vars.HARNESS_ROOT) {
+		const harnessRootNorm = expandPathTemplate('${HARNESS_ROOT}', vars, {env});
+		for (const [oldTpl, newTpl] of Object.entries(reg.relocations)) {
+			try {
+				const oldExpanded = expandPathTemplate(oldTpl, vars, {env});
+				const newExpanded = expandPathTemplate(newTpl, vars, {env});
+				if (newExpanded === harnessRootNorm && oldExpanded.endsWith('/code')) {
+					relocatedPrimaries.push(oldExpanded);
+				}
+			}
+			catch {}
+		}
+	}
+	return {runtimeFile, primary, relocatedPrimaries, vars};
+}
 export class TrustPolicy {
 	constructor(file = fileURLToPath(new URL('./trust-policy.json', import.meta.url))) {
 		this.file = file;
@@ -115,11 +183,11 @@ export class TrustPolicy {
 			if ('upwork-daily' !== spec.trustPolicy) {
 				throw Error('TRUST_POLICY: unknown trust policy');
 			}
-			const policy = JSON.parse(await fs.readFile(this.file, 'utf8'));
-			const runtime = JSON.parse(await fs.readFile(policy.upworkRuntime, 'utf8'));
-			let vars = {};
-			if ([runtime.workspace_root, runtime.daily_root].some(v => 'string' === typeof v && (v.includes('${') || v.includes('%')))) {
-				const regFile = path.resolve(path.dirname(policy.upworkRuntime), runtime.paths_registry || 'paths.json');
+			const resolved = await resolveUpworkRuntime(this.file);
+			const runtime = JSON.parse(await fs.readFile(resolved.runtimeFile, 'utf8'));
+			let vars = resolved.vars;
+			if (!Object.keys(vars).length && [runtime.workspace_root, runtime.daily_root].some(v => 'string' === typeof v && (v.includes('${') || v.includes('%')))) {
+				const regFile = path.resolve(path.dirname(resolved.runtimeFile), runtime.paths_registry || 'paths.json');
 				const reg = JSON.parse(await fs.readFile(regFile, 'utf8'));
 				vars = reg?.variables ?? {};
 			}
